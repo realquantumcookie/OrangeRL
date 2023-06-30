@@ -14,9 +14,8 @@
    limitations under the License.
 """
 
-from ..base import TransitionBatch, EnvironmentStep, EpisodeRollout
-import numpy as np
-from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable, List
+from ..base import TransitionBatch, EnvironmentStep
+from typing import Any, TypeVar, Generic, Union, Dict, List
 
 _ObsT = TypeVar("_ObsT")
 _ActT = TypeVar("_ActT")

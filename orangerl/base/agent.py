@@ -14,8 +14,8 @@
    limitations under the License.
 """
 
-from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterabl
-from .datas import TransitionBatch, EnvironmentStep
+from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable
+from .data import TransitionBatch, EnvironmentStep
 from abc import ABC, abstractmethod
 from enum import Enum
 
@@ -58,6 +58,18 @@ class AgentWrapper(Generic[_ObsWT, _ActWT], Agent[_ObsWT, _ActWT]):
         if __name.startswith("_"):
             raise AttributeError("Cannot access private attribute")
         return getattr(self.agent, __name)
+
+    def get_action(self, observation : _ObsT, stage : AgentStage = AgentStage.ONLINE) -> _ActT:
+        return self.agent.get_action(observation, stage)
+
+    def get_action_batch(self, observation : Union[_ObsT, Iterable[_ObsT]], stage : AgentStage = AgentStage.ONLINE) -> Union[_ActT, Iterable[_ActT]]:
+        return self.agent.get_action_batch(observation, stage)
+
+    def add_transitions(self, transition : Union[TransitionBatch[_ObsT, _ActT], EnvironmentStep[_ObsT, _ActT]]):
+        self.agent.add_transitions(transition)
+
+    def update(self, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
+        return self.agent.update(batch_size, *args, **kwargs)
 
     def unwrapped(self) -> Agent[_ObsT, _ActT]:
         return self.agent.unwrapped()
