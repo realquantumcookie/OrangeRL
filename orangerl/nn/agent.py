@@ -1,11 +1,27 @@
+"""
+   Copyright 2023 Yunhao Cao
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+"""
+
 from ..base.agent import Agent, AgentOutput, AgentStage
 from ..base.data import TransitionBatch, EnvironmentStep
+from .data_util import *
 from abc import abstractmethod, ABC
 import numpy as np
 import torch
 import torch.nn as nn
 from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict
-from collections import OrderedDict
 from dataclasses import dataclass
 import gymnasium as gym
 
@@ -95,22 +111,32 @@ class NNAgentActionMapper(ABC, nn.Module):
 
 
 class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tensor], Any], nn.Module, ABC):
-    def __init__(self, action_mapper : NNAgentActionMapper, device : Optional[Union[torch.device,str]] = None) -> None:
+    def __init__(self, device : Optional[Union[torch.device,str]] = None) -> None:
         super().__init__()
-        self.action_mapper = action_mapper.to(device)
         self.device = device
         self.to(device)
+
+    @property
+    def action_mapper(self) -> NNAgentActionMapper:
+        raise NotImplementedError
 
     def map_action_batch(self, forward_output : Union[Any, Tuple[Any, Any]], stage : AgentStage = AgentStage.ONLINE) -> Union[BatchedNNAgentStochasticOutput, BatchedNNAgentDeterministicOutput]:
         return self.action_mapper(forward_output, stage=stage)
 
+    @property
+    def is_sequence_model(self) -> bool:
+        return False
+
     """
-    Forward pass of the actor
-    param batch: The batch of observations, shaped (batch_size, *observation_shape)
-    param state: The batch of states
-    param stage: The stage of the agent (ONLINE, OFFLINE, EVAL, EXPLORE)
-    param kwargs: Additional keyword arguments
-    return: The batch of actions, shaped (batch_size, *), followed by an optional state variable
+    Forward pass of the agent. 
+    params:
+        batch: batch of observations, shape (batch_size, *observation_shape). For sequence models, this is (batch_size, sequence_length, *observation_shape)
+        state: state of the agent. For sequence models, this is (batch_size, *state_shape) for the initial state of each sequence. This can also be a dictionary containing different named states with the same shape.
+        stage: stage (Exploration, Online, Offline, Eval) of the agent. 
+    returns:
+        For non-sequence models, returns actions shaped (batch_size, *action_shape)
+        For sequence models, returns (actions, states) shaped (batch_size, sequence_length, *action_shape) and (batch_size, *state_shape) respectively
+        Note that the state output will only give the final state of the sequence model.
     """
     @abstractmethod
     def forward(
@@ -136,34 +162,22 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
     def get_action_batch(
         self, 
         observations : Union[np.ndarray,torch.Tensor, Iterable[Union[np.ndarray,torch.Tensor]]], 
-        states : Optional[Any] = None, 
+        states : Optional[Iterable[Optional[Any]]] = None, 
         stage : AgentStage = AgentStage.ONLINE
     ) -> Iterable[AgentOutput[torch.Tensor, Optional[torch.Tensor]]]:
-        input_obs = self._batch_to_tensor(observations)
-        input_state = states #self._batch_to_tensor(state) if state is not None else None
+        input_obs = transform_any_array_to_tensor(observations)
+        if self.is_sequence_model:
+            input_obs = input_obs.unsqueeze(1)
+        
+        if states is None:
+            input_state = None
+        else:
+            if isinstance(next(iter(states)), dict):
+                input_state = {}
+                for key in next(iter(states)).keys():
+                    input_state[key] = torch.stack([state[key] for state in states])
+            else:
+                input_state = transform_any_array_to_tensor(states)
+            
         output = self.forward(input_obs, state = input_state, stage = stage)
         return self.map_action_batch(output, stage)
-    
-    @staticmethod
-    def _batch_to_tensor(
-        batch: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor],
-    ):
-        if isinstance(batch, (np.ndarray, torch.Tensor)):
-            if isinstance(batch, np.ndarray):
-                return torch.from_numpy(batch)
-            else:
-                return batch
-        else:
-            return torch.stack([torch.from_numpy(obs) if isinstance(obs, np.ndarray) else obs for obs in batch])
-        
-    @staticmethod
-    def _batch_to_np(
-        batch: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor],
-    ):
-        if isinstance(batch, (np.ndarray, torch.Tensor)):
-            if isinstance(batch, torch.Tensor):
-                return batch.detach().cpu().numpy()
-            else:
-                return batch
-        else:
-            return np.stack([obs.detach().cpu().numpy() if isinstance(obs, torch.Tensor) else obs for obs in batch])

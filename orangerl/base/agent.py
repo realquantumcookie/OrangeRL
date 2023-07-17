@@ -18,6 +18,7 @@ from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable, List,
 from .data import TransitionBatch, EnvironmentStep
 from abc import ABC, abstractmethod
 from enum import Enum
+import numpy as np
 from dataclasses import dataclass
 
 class AgentStage(Enum):
@@ -43,6 +44,7 @@ _ObsT = TypeVar("_ObsT")
 _ActT = TypeVar("_ActT")
 _StateT = TypeVar("_StateT")
 class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
+    randomness : np.random.Generator = np.random.default_rng()
     @property
     def action_type(self) -> AgentActionType:
         pass
@@ -50,16 +52,16 @@ class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
     def get_action(
         self, 
         observation : _ObsT, 
-        state : _StateT, 
+        state : Optional[_StateT], 
         stage : AgentStage = AgentStage.ONLINE
     ) -> AgentOutput[_ActT, _StateT, SupportsFloat]:
-        return next(iter(self.get_action_batch([observation], [state], stage)))
+        return next(iter(self.get_action_batch([observation], None, stage))) if state is None else next(iter(self.get_action_batch([observation], [state], stage)))
 
     @abstractmethod
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Iterable[_StateT], 
+        states : Optional[Iterable[Optional[_StateT]]], 
         stage : AgentStage = AgentStage.ONLINE
     ) -> Iterable[AgentOutput[_ActT, _StateT, SupportsFloat]]:
         pass
@@ -93,13 +95,17 @@ class AgentWrapper(Generic[_ObsWT, _ActWT, _StateWT], Agent[_ObsWT, _ActWT, _Sta
         return getattr(self.agent, __name)
     
     @property
+    def is_sequence_model(self) -> bool:
+        return False
+
+    @property
     def action_type(self) -> AgentActionType:
         return self.agent.action_type
 
     def get_action(
         self, 
         observation : _ObsWT, 
-        state : _StateWT, 
+        state : Optional[_StateWT], 
         stage : AgentStage = AgentStage.ONLINE
     ) -> AgentOutput[_ActWT, _StateWT, SupportsFloat]:
         return self.agent.get_action(observation, state, stage)
@@ -107,7 +113,7 @@ class AgentWrapper(Generic[_ObsWT, _ActWT, _StateWT], Agent[_ObsWT, _ActWT, _Sta
     def get_action_batch(
         self, 
         observations : Iterable[_ObsWT], 
-        states : Iterable[_StateWT], 
+        states : Optional[Iterable[Optional[_StateWT]]], 
         stage : AgentStage = AgentStage.ONLINE
     ) -> Iterable[AgentOutput[_ActWT, _StateWT, SupportsFloat]]:
         return self.agent.get_action_batch(observations, states, stage)
