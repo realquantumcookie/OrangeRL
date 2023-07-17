@@ -16,6 +16,7 @@
 
 from orangerl.base.agent import AgentStage
 from orangerl.base.data import EnvironmentStep, TransitionBatch
+from orangerl.nn.data_util import Optional
 from .agent import ImitationLearningAgent
 from ..agent import NNAgentActionMapper
 from ..data_util import transform_transition_batch_to_torch_tensor
@@ -94,37 +95,65 @@ class BehaviorCloningAgent(ImitationLearningAgent):
     def update(self, batch_size: int | None = None, *args, **kwargs) -> Dict[str, Any]:
         if batch_size is None:
             batch_size = self.replay_buffer.length
+        
+        is_sequence_data = False
+        update_data = None
+        if self._next_update_cache is None or self._next_update_cache["batch_size"] != batch_size:
+            self.prefetch_update_data(batch_size=batch_size, *args, **kwargs)
+        is_sequence_data = self._next_update_cache["is_sequence_data"]
+        update_data = self._next_update_cache["update_data"]
+        if is_sequence_data:
+            all_acts = []
+            for obs, exp_act in update_data["obs"]:
+                act = self.forward(obs)
+                all_acts.append(act)
+            
+            all_acts = torch.cat(all_acts, dim=0)
+            exp_acts = torch.cat(update_data["exp_act"], dim=0)
+            loss = self.loss_fn(all_acts, exp_acts)
+        else:
+            obs = update_data["obs"]
+            exp_act = update_data["exp_act"]
+            act = self.forward(obs)
+            loss = self.loss_fn(act, exp_act)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def prefetch_update_data(self, batch_size: int | None = None, *args, **kwargs) -> None:
+        assert batch_size is not None and batch_size > 0, "batch_size must be specified"
         if self.is_sequence_model:
             sequences = self.replay_buffer.sample_sequences(transition_length_limit=batch_size, randomness=self.randomness)
-            loss = None
-            all_acts = []
+            all_obs = []
             all_exp_acts = []
 
             for seq in sequences:
                 obs, exp_act, _ = transform_transition_batch_to_torch_tensor(seq)
-                obs = obs.to(self.device)
-                obs = exp_act.to(self.device)
-                act = self.forward(obs, stage=AgentStage.ONLINE)
-                all_acts.append(act)
+                obs = obs.to(self.device, non_blocking=True)
+                exp_act = exp_act.to(self.device, non_blocking=True)
+                all_obs.append(obs)
                 all_exp_acts.append(exp_act)
             
-            all_acts = torch.cat(all_acts, dim=0)
-            all_exp_acts = torch.cat(all_exp_acts, dim=0)
-            loss = self.loss_fn(all_acts, all_exp_acts)
-                
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            return {"loss": loss.item()}
+            self._next_update_cache = {
+                "is_sequence_data": True,
+                "update_data": {
+                    "obs": all_obs,
+                    "exp_act": all_exp_acts
+                },
+                "batch_size": batch_size,
+            }
 
         else:
             batch = self.replay_buffer.sample(batch_size, randomness=self.randomness)
             obs, exp_act, _ = transform_transition_batch_to_torch_tensor(batch)
-            obs = obs.to(self.device)
-            obs = exp_act.to(self.device)
-            act = self.forward(obs, stage=AgentStage.ONLINE)
-            loss = self.loss_fn(act, exp_act)
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            return {"loss": loss.item()}
+            obs = obs.to(self.device, non_blocking=True)
+            exp_act = exp_act.to(self.device, non_blocking=True)
+            self._next_update_cache = {
+                "is_sequence_data": False,
+                "update_data": {
+                    "obs": obs,
+                    "exp_act": exp_act
+                },
+                "batch_size": batch_size,
+            }

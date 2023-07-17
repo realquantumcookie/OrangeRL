@@ -45,10 +45,6 @@ _ActT = TypeVar("_ActT")
 _StateT = TypeVar("_StateT")
 class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
     randomness : np.random.Generator = np.random.default_rng()
-    @property
-    def action_type(self) -> AgentActionType:
-        pass
-
     def get_action(
         self, 
         observation : _ObsT, 
@@ -56,6 +52,14 @@ class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
         stage : AgentStage = AgentStage.ONLINE
     ) -> AgentOutput[_ActT, _StateT, SupportsFloat]:
         return next(iter(self.get_action_batch([observation], None, stage))) if state is None else next(iter(self.get_action_batch([observation], [state], stage)))
+
+    @property
+    def unwrapped(self) -> "Agent[_ObsT, _ActT]":
+        return self
+
+    @property
+    def action_type(self) -> AgentActionType:
+        pass
 
     @abstractmethod
     def get_action_batch(
@@ -77,9 +81,9 @@ class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
     def update(self, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
         pass
 
-    @property
-    def unwrapped(self) -> "Agent[_ObsT, _ActT]":
-        return self
+    @abstractmethod
+    def prefetch_update_data(self, batch_size : Optional[int] = None, *args, **kwargs) -> None:
+        pass
 
 _ObsWT = TypeVar("_ObsWT")
 _ActWT = TypeVar("_ActWT")

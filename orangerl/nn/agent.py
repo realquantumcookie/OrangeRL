@@ -14,7 +14,7 @@
    limitations under the License.
 """
 
-from ..base.agent import Agent, AgentOutput, AgentStage
+from ..base.agent import Agent, AgentOutput, AgentStage, AgentActionType
 from ..base.data import TransitionBatch, EnvironmentStep
 from .data_util import *
 from abc import abstractmethod, ABC
@@ -46,6 +46,7 @@ class BatchedNNAgentDictStateWrapper():
                 constructed_iterator_dict[key] = next(constructed_iterator_dict[key])
             yield constructed_iterator_dict
 
+# TODO: Fix sequence support for DeterministicOutput and StochasticOutput
 @dataclass
 class BatchedNNAgentDeterministicOutput(Iterable[NNAgentOutput]):
     actions: torch.Tensor
@@ -92,12 +93,16 @@ class BatchedNNAgentStochasticOutput(Iterable[NNAgentOutput]):
             )
 
 class NNAgentActionMapper(ABC, nn.Module):
-    def __init__(self, action_space : gym.spaces.Box) -> None:
+    def __init__(self, action_space : gym.Space) -> None:
         super().__init__()
         self.action_space = action_space
     
     @abstractmethod
     def forward(self, output : Union[torch.Tensor, Tuple[torch.Tensor, Any]], stage : AgentStage = AgentStage.ONLINE) -> Union[BatchedNNAgentStochasticOutput, BatchedNNAgentDeterministicOutput]:
+        pass
+
+    @property
+    def action_type(self) -> AgentActionType:
         pass
 
     @staticmethod
@@ -115,6 +120,11 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
         super().__init__()
         self.device = device
         self.to(device)
+        self._next_update_cache = None
+
+    @property
+    def action_type(self) -> AgentActionType:
+        return self.action_mapper.action_type
 
     @property
     def action_mapper(self) -> NNAgentActionMapper:
@@ -157,6 +167,10 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
 
     @abstractmethod
     def update(self, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def prefetch_update_data(self, batch_size : Optional[int] = None, *args, **kwargs) -> None:
         pass
 
     def get_action_batch(

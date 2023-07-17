@@ -22,7 +22,8 @@ from ...base.agent import AgentStage
 from ..agent import NNAgentActionMapper, BatchedNNAgentDeterministicOutput, BatchedNNAgentStochasticOutput, BatchedNNAgentDictStateWrapper
 
 class NNAgentTanhActionMapper(NNAgentActionMapper):
-    def __init__(self, action_space: gym.spaces.Box) -> None:
+    def __init__(self, action_space: gym.Space) -> None:
+        assert isinstance(action_space, gym.spaces.Box), "Action space must be a Box"
         super().__init__(action_space)
         assert np.all(np.isfinite(action_space.low)) and np.all(np.isfinite(action_space.high)), "Action space must be bounded"
 
