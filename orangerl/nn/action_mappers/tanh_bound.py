@@ -19,7 +19,8 @@ import gymnasium as gym
 import torch
 import numpy as np
 from ...base.agent import AgentStage
-from ..agent import NNAgentActionMapper, BatchedNNAgentDeterministicOutput, BatchedNNAgentStochasticOutput, BatchedNNAgentDictStateWrapper
+from ..agent import NNAgentActionMapper
+from ..data_util import BatchedNNAgentStochasticOutput
 
 class NNAgentTanhActionMapper(NNAgentActionMapper):
     def __init__(self, action_space: gym.Space) -> None:
@@ -29,16 +30,20 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
 
     """
     Forward pass of the action mapper
-    param output: Output from the network, action shaped (batch_size, (*action_shape), 2) and state can be shaped whatever
+    param output: Output from the network, action shaped (batch_size, (*action_shape), 2) or (batch_size, 1, (*action_shape), 2) for sequence models
+    The state should be shaped (batch_size, (*state_shape))
     return: The batch of actions, shaped (batch_size, (*action_shape))
     """
     def forward(self, output : Union[torch.Tensor, Tuple[torch.Tensor, Any]], stage : AgentStage = AgentStage.ONLINE) -> BatchedNNAgentStochasticOutput:
         if isinstance(output, tuple):
             batch, states = output
+            assert batch.ndim > 2 and batch.shape[1] == 1, "The output must be a sequence shaped (batch_size, 1, *action_shape, 2)"
+            batch = batch.squeeze(1) # Remove the sequence dimension
         else:
             batch = output
             states = None
         
+        assert batch.shape[-1] == 2, "The output must be a sequence shaped (batch_size, 1, *action_shape, 2)"
         mean = torch.tanh(batch[...,0])
         std = torch.exp(batch[...,1])
         dist = torch.distributions.Normal(mean, std)

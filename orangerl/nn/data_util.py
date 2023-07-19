@@ -14,10 +14,95 @@
    limitations under the License.
 """
 
-from ..base import TransitionBatch, EnvironmentStep, EpisodeRollout
-from typing import Dict, Any, Tuple, Optional, Iterable, List, Union
+from ..base import TransitionBatch, EnvironmentStep, EpisodeRollout, AgentOutput, AgentStage
+from typing import Dict, Any, Tuple, Optional, Iterable, List, Union, Iterator
 import torch
 import numpy as np
+from dataclasses import dataclass
+
+NNAgentOutput = AgentOutput[torch.Tensor, Any, torch.Tensor]
+
+class BatchedNNAgentDictStateWrapper():
+    batched_dict_state: Dict[str, Any]
+    def __iter__(self) -> Iterator[Any]:
+        constructed_iterator_dict = {}
+        for key in self.batched_dict_state.keys():
+            if isinstance(self.batched_dict_state, dict):
+                def lambda_iter():
+                    yield from __class__(self.batched_dict_state[key])
+                constructed_iterator_dict[key] = lambda_iter()
+            elif isinstance(self.batched_dict_state[key], Iterable):
+                constructed_iterator_dict[key] = iter(self.batched_dict_state[key])
+            else:
+                raise ValueError("BatchedNNAgentDictStateWrapper only accepts dict of iterables")
+        while True:
+            constructed_iterator_dict = {}
+            for key in self.batched_dict_state.keys():
+                constructed_iterator_dict[key] = next(constructed_iterator_dict[key])
+            yield constructed_iterator_dict
+
+@dataclass
+class BatchedNNAgentDiscreteOutput(Iterable[NNAgentOutput]):
+    action_probs: torch.Tensor
+    states: Optional[Iterable[Any]] = None
+    start: int = 0
+
+    def __iter__(self) -> Iterator[NNAgentOutput]:
+        length = self.action_probs.shape[0]
+        iter_state = iter(self.states) if self.states is not None else None
+        for i in range(length):
+            sampled_idx = torch.multinomial(self.action_probs[i], 1, replacement = True)
+            yield NNAgentOutput(
+                action = sampled_idx + self.start,
+                state = next(iter_state) if iter_state is not None else None,
+                log_prob = torch.log(self.action_probs[i][sampled_idx])
+            )
+
+
+@dataclass
+class BatchedNNAgentDeterministicOutput(Iterable[NNAgentOutput]):
+    actions: torch.Tensor
+    states: Optional[Iterable[Any]] = None
+    log_probs: torch.Tensor
+    
+    def __iter__(self) -> Iterator[NNAgentOutput]:
+        length = self.actions.shape[0]
+        iter_state = iter(self.states) if self.states is not None else None
+        for i in range(length):
+            yield NNAgentOutput(
+                action = self.actions[i],
+                state = next(iter_state) if iter_state is not None else None,
+                log_prob = self.log_probs[i]
+            )
+
+@dataclass
+class BatchedNNAgentStochasticOutput(Iterable[NNAgentOutput]):
+    action_dist: torch.distributions.Distribution
+    states: Optional[Iterable[Any]] = None
+    stage: AgentStage = AgentStage.ONLINE
+
+    def __iter__(self) -> Iterator[NNAgentOutput]:
+        length = self.action_dist.batch_shape[0]
+        
+        if self.stage == AgentStage.EVAL:
+            try:
+                actions = self.action_dist.mean
+            except NotImplementedError:
+                actions = self.action_dist.rsample()
+        else:
+            actions = self.action_dist.rsample()
+        
+        log_probs = self.action_dist.log_prob(actions)
+        log_probs_sum = log_probs.view(length, -1).sum(dim=1)
+        
+        iter_state = iter(self.states) if self.states is not None else None
+
+        for i in range(length):
+            yield NNAgentOutput(
+                action = actions[i],
+                state = next(iter_state) if iter_state is not None else None,
+                log_prob = log_probs_sum[i]
+            )
 
 def transform_any_array_to_numpy(
     batch: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor],
