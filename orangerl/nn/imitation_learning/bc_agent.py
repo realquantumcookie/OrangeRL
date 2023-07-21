@@ -14,19 +14,15 @@
    limitations under the License.
 """
 
-from orangerl.base.agent import AgentStage
-from orangerl.base.data import EnvironmentStep, TransitionBatch
-from orangerl.nn.data_util import Optional
+from ...data import ReplayBuffer
+from ...base import AgentStage, TransitionBatch, EnvironmentStep
 from .agent import ImitationLearningAgent
 from ..agent import NNAgentActionMapper
 from ..data_util import transform_transition_batch_to_torch_tensor
-from ...data import ReplayBuffer
 from typing import Any, Optional, Tuple, Union, Dict
 import numpy as np
 import torch
 import torch.nn as nn
-import gymnasium as gym
-
 
 class BehaviorCloningAgent(ImitationLearningAgent):
     def __init__(

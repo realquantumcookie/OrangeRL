@@ -21,9 +21,38 @@ from abc import abstractmethod, ABC
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict
-from dataclasses import dataclass
+import tensordict
+from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar
 import gymnasium as gym
+from dataclasses import dataclass
+
+NNAgentState = Union[torch.Tensor, tensordict.TensorDict]
+NNAgentOutput = AgentOutput[torch.Tensor, NNAgentState, torch.Tensor]
+
+_CustomDT = TypeVar('_CustomDT')
+@dataclass
+class BatchedNNOutput(Iterable[NNAgentOutput], Generic[_CustomDT]):
+    actions : torch.Tensor
+    log_probs : torch.Tensor
+    states: Optional[NNAgentState] = None
+    custom_data: Optional[_CustomDT] = None
+    is_sequence: bool = False
+
+    def __iter__(self) -> Iterator[NNAgentOutput]:
+        for i in range(self.actions.shape[0]):
+            if not self.is_sequence:
+                yield NNAgentOutput(
+                    action = self.actions[i],
+                    state = self.states[i] if self.states is not None else None,
+                    log_prob = self.log_probs[i]
+                )
+            else:
+                for j in range(self.actions.shape[1]):
+                    yield NNAgentOutput(
+                        action = self.actions[i,j],
+                        state = None if (self.states is None or j < self.actions.shape[1] - 1) else self.states[i],
+                        log_prob = self.log_probs[i,j]
+                    )
 
 class NNAgentActionMapper(ABC, nn.Module):
     def __init__(self, action_space : gym.Space) -> None:
@@ -31,21 +60,25 @@ class NNAgentActionMapper(ABC, nn.Module):
         self.action_space = action_space
     
     @abstractmethod
-    def forward(self, output : Union[torch.Tensor, Tuple[torch.Tensor, Any]], stage : AgentStage = AgentStage.ONLINE) -> Union[BatchedNNAgentStochasticOutput, BatchedNNAgentDeterministicOutput]:
+    def forward(
+        self, 
+        output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]], 
+        stage : AgentStage = AgentStage.ONLINE
+    ) -> BatchedNNOutput:
+        pass
+
+    @abstractmethod
+    def log_prob(
+        self,
+        output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]],
+        action : torch.Tensor,
+        stage : AgentStage = AgentStage.ONLINE
+    ) -> torch.Tensor:
         pass
 
     @property
     def action_type(self) -> AgentActionType:
         pass
-
-    @staticmethod
-    def _wrap_state(state : Any) -> Iterable[Any]:
-        if isinstance(state, dict):
-            return BatchedNNAgentDictStateWrapper(state)
-        elif isinstance(state, Iterable):
-            return state
-        else:
-            raise ValueError("NNAgentActionMapper only accepts dict of iterables")
 
 
 class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tensor], Any], nn.Module, ABC):
@@ -63,7 +96,7 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
     def action_mapper(self) -> NNAgentActionMapper:
         raise NotImplementedError
 
-    def map_action_batch(self, forward_output : Union[Any, Tuple[Any, Any]], stage : AgentStage = AgentStage.ONLINE) -> Union[BatchedNNAgentStochasticOutput, BatchedNNAgentDeterministicOutput]:
+    def map_action_batch(self, forward_output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]], stage : AgentStage = AgentStage.ONLINE) -> BatchedNNOutput:
         return self.action_mapper(forward_output, stage=stage)
 
     @property
@@ -73,7 +106,7 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
     """
     Forward pass of the agent. 
     params:
-        batch: batch of observations, shape (batch_size, *observation_shape). For sequence models, this is (batch_size, sequence_length, *observation_shape)
+        obs_batch: batch of observations, shape (batch_size, *observation_shape). For sequence models, this is (batch_size, sequence_length, *observation_shape)
         state: state of the agent. For sequence models, this is (batch_size, *state_shape) for the initial state of each sequence. This can also be a dictionary containing different named states with the same shape.
         stage: stage (Exploration, Online, Offline, Eval) of the agent. 
     returns:
@@ -84,12 +117,22 @@ class NNAgent(Agent[Union[np.ndarray,torch.Tensor], Union[np.ndarray, torch.Tens
     @abstractmethod
     def forward(
         self,
-        batch: torch.Tensor,
-        state: Optional[Any] = None,
+        obs_batch: torch.Tensor,
+        state: Optional[NNAgentState] = None,
         stage: AgentStage = AgentStage.ONLINE,
         **kwargs: Any,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]]:
         pass
+
+    def action_log_prob(
+        self,
+        obs_batch: torch.Tensor,
+        state: Optional[NNAgentState] = None,
+        action: torch.Tensor = None,
+        stage: AgentStage = AgentStage.ONLINE,
+    ) -> torch.Tensor:
+        output = self.forward(obs_batch, state, stage)
+        return self.action_mapper.log_prob(output, action, stage)
 
     def add_transitions(
         self, 

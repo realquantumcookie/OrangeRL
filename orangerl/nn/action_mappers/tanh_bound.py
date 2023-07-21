@@ -18,9 +18,9 @@ from typing import Union, Tuple, Any
 import gymnasium as gym
 import torch
 import numpy as np
+
 from ...base.agent import AgentStage
-from ..agent import NNAgentActionMapper
-from ..data_util import BatchedNNAgentStochasticOutput
+from ..agent import NNAgentActionMapper, NNAgentState, BatchedNNOutput
 
 class NNAgentTanhActionMapper(NNAgentActionMapper):
     def __init__(self, action_space: gym.Space) -> None:
@@ -28,36 +28,76 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         super().__init__(action_space)
         assert np.all(np.isfinite(action_space.low)) and np.all(np.isfinite(action_space.high)), "Action space must be bounded"
 
+    def forward_distribution(
+        self,
+        output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]],
+        stage : AgentStage = AgentStage.ONLINE
+    ):
+        if isinstance(output, tuple):
+            is_sequence = True
+            batch, states = output
+            assert batch.ndim > 3, "The output must be a sequence shaped (batch_size, seq_length, *action_shape, 2)"
+        else:
+            is_sequence = False
+            batch = output
+            states = None
+            assert batch.ndim > 2, "The output must be a sequence shaped (batch_size, *action_shape, 2)"
+        assert batch.shape[-1] == 2, "The last dimension of the output must be 2"
+        mean = batch[...,0]
+        std = torch.exp(batch[...,1])
+        action_space_mean = (self.action_space.high + self.action_space.low) / 2
+        action_space_span = (self.action_space.high - self.action_space.low) / 2
+        action_space_mean = action_space_mean[np.newaxis, :]
+        action_space_span = action_space_span[np.newaxis, :]
+        if isinstance(output, tuple):
+            action_space_mean = action_space_mean[np.newaxis, :]
+            action_space_span = action_space_span[np.newaxis, :]
+        transforms = [
+            torch.distributions.transforms.TanhTransform(),
+            torch.distributions.transforms.AffineTransform(loc = torch.from_numpy(action_space_mean), scale = torch.from_numpy(action_space_span))
+        ]
+        dist = torch.distributions.Normal(mean, std)
+        transformed_dist = torch.distributions.TransformedDistribution(dist, transforms)
+        return transformed_dist, states, is_sequence
+
+    @staticmethod
+    def log_prob_distribution(
+        dist: torch.distributions.TransformedDistribution,
+        action: torch.Tensor,
+        is_sequence: bool
+    ) -> torch.Tensor:
+        log_prob = dist.log_prob(action)
+        sum_dims = log_prob.shape[2:] if is_sequence else log_prob.shape[1:]
+        log_prob = torch.sum(log_prob, dim=sum_dims)
+        return log_prob
+
     """
     Forward pass of the action mapper
     param output: Output from the network, action shaped (batch_size, (*action_shape), 2) or (batch_size, 1, (*action_shape), 2) for sequence models
     The state should be shaped (batch_size, (*state_shape))
     return: The batch of actions, shaped (batch_size, (*action_shape))
     """
-    def forward(self, output : Union[torch.Tensor, Tuple[torch.Tensor, Any]], stage : AgentStage = AgentStage.ONLINE) -> BatchedNNAgentStochasticOutput:
-        if isinstance(output, tuple):
-            batch, states = output
-            assert batch.ndim > 2 and batch.shape[1] == 1, "The output must be a sequence shaped (batch_size, 1, *action_shape, 2)"
-            batch = batch.squeeze(1) # Remove the sequence dimension
-        else:
-            batch = output
-            states = None
+    def forward(
+        self, 
+        output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]], 
+        stage : AgentStage = AgentStage.ONLINE
+    ) -> BatchedNNOutput:
+        dist, states, is_sequence = self.forward_distribution(output, stage)
         
-        assert batch.shape[-1] == 2, "The output must be a sequence shaped (batch_size, 1, *action_shape, 2)"
-        mean = torch.tanh(batch[...,0])
-        std = torch.exp(batch[...,1])
-        dist = torch.distributions.Normal(mean, std)
-        
-        action_space_mean = (self.action_space.high + self.action_space.low) / 2
-        action_space_span = (self.action_space.high - self.action_space.low) / 2
-        transforms = [
-            torch.distributions.transforms.TanhTransform(),
-            torch.distributions.transforms.AffineTransform(loc = action_space_mean[np.newaxis, :], scale = action_space_span[np.newaxis, :])
-        ]
-        
-        transformed_dist = torch.distributions.TransformedDistribution(dist, transforms)
-        return BatchedNNAgentStochasticOutput(
-            action_dist = transformed_dist,
-            states=self._wrap_state(states) if states is not None else None,
-            stage=stage
+        actions = dist.rsample()
+
+        return BatchedNNOutput(
+            actions = actions,
+            log_probs = __class__.log_prob_distribution(dist, actions, is_sequence),
+            states = states,
+            is_sequence = is_sequence
         )
+
+    def log_prob(
+        self, 
+        output: Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]],
+        action: torch.Tensor, 
+        stage: AgentStage = AgentStage.ONLINE
+    ) -> torch.Tensor:
+        dist, _, is_sequence = self.forward_distribution(output, stage)
+        return __class__.log_prob_distribution(dist, action, is_sequence)
