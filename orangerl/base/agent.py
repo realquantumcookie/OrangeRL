@@ -16,7 +16,7 @@
 
 from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable, List, SupportsFloat
 from .data import TransitionBatch, EnvironmentStep
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, abstractproperty
 from enum import Enum
 import numpy as np
 from dataclasses import dataclass
@@ -33,24 +33,34 @@ class AgentActionType(Enum):
 
 _ActOutputT = TypeVar("_ActOutputT")
 _StateOutputT = TypeVar("_StateOutputT")
-_ProbOutputT = TypeVar("_ProbOutputT", bound=SupportsFloat)
-@dataclass
-class AgentOutput(Generic[_ActOutputT, _StateOutputT, _ProbOutputT]):
-    action: _ActOutputT
-    log_prob: Union[float, _ProbOutputT]
-    state: Optional[_StateOutputT] = None
+_LogProbOutputT = TypeVar("_LogProbOutputT", bound=SupportsFloat)
+class AgentOutput(Generic[_ActOutputT, _StateOutputT, _LogProbOutputT]):
+    @property
+    @abstractproperty
+    def action(self) -> _ActOutputT:
+        pass
+    
+    @property
+    @abstractproperty
+    def log_prob(self) -> _LogProbOutputT:
+        pass
+
+    @property
+    @abstractproperty
+    def state(self) -> _StateOutputT:
+        pass
 
 _ObsT = TypeVar("_ObsT")
 _ActT = TypeVar("_ActT")
 _StateT = TypeVar("_StateT")
-class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
-    randomness : np.random.Generator = np.random.default_rng()
+_LogProbT = TypeVar("_LogProbT", bound=SupportsFloat)
+class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], ABC):
     def get_action(
         self, 
         observation : _ObsT, 
         state : Optional[_StateT], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActT, _StateT, SupportsFloat]:
+    ) -> AgentOutput[_ActT, _StateT, _LogProbT]:
         return next(iter(self.get_action_batch([observation], None, stage))) if state is None else next(iter(self.get_action_batch([observation], [state], stage)))
 
     @property
@@ -58,7 +68,18 @@ class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
         return self
 
     @property
+    @abstractproperty
     def action_type(self) -> AgentActionType:
+        pass
+
+    @property
+    @abstractproperty
+    def is_sequence_model(self) -> bool:
+        pass
+    
+    @property
+    @abstractproperty
+    def np_random(self) -> Optional[np.random.Generator]:
         pass
 
     @abstractmethod
@@ -67,71 +88,80 @@ class Agent(Generic[_ObsT, _ActT, _StateT], ABC):
         observations : Iterable[_ObsT], 
         states : Optional[Iterable[Optional[_StateT]]], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActT, _StateT, SupportsFloat]]:
+    ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
         pass
 
+    @abstractmethod
     def add_transitions(
         self, 
         transition : Union[TransitionBatch[_ObsT, _ActT], EnvironmentStep[_ObsT, _ActT]],
         stage : AgentStage = AgentStage.ONLINE
-    ):
+    ) -> None:
         pass
 
     @abstractmethod
     def update(self, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
         pass
 
-    @abstractmethod
     def prefetch_update_data(self, batch_size : Optional[int] = None, *args, **kwargs) -> None:
         pass
 
 _ObsWT = TypeVar("_ObsWT")
 _ActWT = TypeVar("_ActWT")
 _StateWT = TypeVar("_StateWT")
-class AgentWrapper(Generic[_ObsWT, _ActWT, _StateWT], Agent[_ObsWT, _ActWT, _StateWT]):
-    def __init__(self, agent : Union["AgentWrapper[_ObsWT, _ActWT, _StateWT]", Agent[_ObsWT, _ActWT, _StateWT]]) -> None:
+_LogProbWT = TypeVar("_LogProbWT", bound=SupportsFloat)
+class AgentWrapper(Generic[_ObsWT, _ActWT, _StateWT, _LogProbWT], Agent[_ObsWT, _ActWT, _StateWT, _LogProbWT]):
+    def __init__(self, agent : Agent[_ObsWT, _ActWT, _StateWT, _LogProbWT]) -> None:
         Agent.__init__(self)
-        self.agent = agent
+        self._agent = agent
 
     def __getattr__(self, __name: str) -> Any:
         if __name.startswith("_"):
             raise AttributeError("Cannot access private attribute")
-        return getattr(self.agent, __name)
-    
+        return getattr(self._agent, __name)
+
     @property
-    def is_sequence_model(self) -> bool:
-        return False
+    def unwrapped(self) -> Agent[_ObsWT, _ActWT, _StateWT, _LogProbWT]:
+        return self._agent.unwrapped
 
     @property
     def action_type(self) -> AgentActionType:
-        return self.agent.action_type
+        return self._agent.action_type
+    
+    @property
+    def is_sequence_model(self) -> bool:
+        return self._agent.is_sequence_model
+
+    @property
+    def np_random(self) -> Optional[np.random.Generator]:
+        return self._agent.np_random
 
     def get_action(
         self, 
         observation : _ObsWT, 
         state : Optional[_StateWT], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActWT, _StateWT, SupportsFloat]:
-        return self.agent.get_action(observation, state, stage)
+    ) -> AgentOutput[_ActWT, _StateWT, _LogProbWT]:
+        return Agent.get_action(self, observation, state, stage)
     
     def get_action_batch(
         self, 
         observations : Iterable[_ObsWT], 
         states : Optional[Iterable[Optional[_StateWT]]], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActWT, _StateWT, SupportsFloat]]:
-        return self.agent.get_action_batch(observations, states, stage)
+    ) -> Iterable[AgentOutput[_ActWT, _StateWT, _LogProbWT]]:
+        return self._agent.get_action_batch(observations, states, stage)
 
     def add_transitions(
         self, 
         transition : Union[TransitionBatch[_ObsWT, _ActWT], EnvironmentStep[_ObsWT, _ActWT]],
         stage : AgentStage = AgentStage.ONLINE
     ):
-        self.agent.add_transitions(transition, stage)
+        self._agent.add_transitions(transition, stage)
 
     def update(self, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
-        return self.agent.update(batch_size, *args, **kwargs)
+        return self._agent.update(batch_size, *args, **kwargs)
 
-    @property
-    def unwrapped(self) -> Agent[_ObsWT, _ActWT]:
-        return self.agent.unwrapped()
+    def prefetch_update_data(self, batch_size : Optional[int] = None, *args, **kwargs) -> None:
+        self._agent.prefetch_update_data(batch_size, *args, **kwargs)
+

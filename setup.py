@@ -25,6 +25,7 @@ setup(
     keywords=["reinforcement learning", "gymnasium"],
     license="MIT",
     install_requires=read_requirements_file("requirements.txt"),
-    packages=['orangerl'], # find_packages(),
+    packages=find_packages(),
+    include_package_data=True,
     python_requires='>=3.10',
 )

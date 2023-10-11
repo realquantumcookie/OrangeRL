@@ -19,7 +19,7 @@ from typing import Any, TypeVar, Generic, Union, Dict, List
 
 _ObsT = TypeVar("_ObsT")
 _ActT = TypeVar("_ActT")
-class ReplayBuffer(Generic[_ObsT, _ActT], TransitionBatch[_ObsT, _ActT]):
+class ReplayBuffer(TransitionBatch[_ObsT, _ActT], Generic[_ObsT, _ActT]):
     def __init__(self, capacity : int = 100_000) -> None:
         TransitionBatch.__init__(self)
         self.observations: List[_ObsT] = []
