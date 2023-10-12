@@ -20,7 +20,7 @@ import torch
 import numpy as np
 
 from ...base.agent import AgentStage
-from ..agent import NNAgentActionMapper, NNAgentState, BatchedNNOutput
+from ..agent import NNAgentActionMapper, NNAgentState, BatchedNNAgentOutput
 
 class NNAgentTanhActionMapper(NNAgentActionMapper):
     def __init__(self, action_space: gym.Space) -> None:
@@ -81,12 +81,12 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         self, 
         output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> BatchedNNOutput:
+    ) -> BatchedNNAgentOutput:
         dist, states, is_sequence = self.forward_distribution(output, stage)
         
         actions = dist.rsample()
 
-        return BatchedNNOutput(
+        return BatchedNNAgentOutput(
             actions = actions,
             log_probs = __class__.log_prob_distribution(dist, actions, is_sequence),
             states = states,

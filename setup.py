@@ -11,7 +11,7 @@ def read_requirements_file(filename):
 setup(
     name='orangerl',
      version='0.0.1a',
-    description="ROAR_PY interface definitions and streaming capabilities library",
+    description="A simple reinforcement learning library for research purpose based on PyTorch ",
     url="https://github.com/realquantumcookie/OrangeRL",
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -22,10 +22,10 @@ setup(
         'Topic :: Scientific/Engineering :: Artificial Intelligence',
     ],
     author="Yunhao Cao",
-    keywords=["reinforcement learning", "gymnasium"],
+    keywords=["reinforcement learning", "pytorch"],
     license="MIT",
     install_requires=read_requirements_file("requirements.txt"),
     packages=find_packages(),
     include_package_data=True,
-    python_requires='>=3.10',
+    python_requires='>=3.8',
 )

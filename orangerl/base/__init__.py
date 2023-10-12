@@ -1,2 +1,2 @@
-from .data import TransitionBatch, EnvironmentStep, EpisodeRollout
+from .data import EnvironmentStep, TransitionBatch, TransitionSequence, MutableTransitionSequence
 from .agent import Agent, AgentStage, AgentActionType, AgentOutput, AgentWrapper

@@ -14,7 +14,7 @@
    limitations under the License.
 """
 
-from ..base import TransitionBatch, EnvironmentStep, EpisodeRollout, AgentOutput
+from orangerl import TransitionBatch, EnvironmentStep, AgentOutput
 from typing import Dict, Any, Tuple, Iterable, List, Union
 import torch
 import numpy as np
@@ -30,17 +30,17 @@ def transform_any_array_to_numpy(
     else:
         return np.stack([transform_any_array_to_numpy(b) for b in batch])
 
-def transform_any_array_to_tensor(
-    batch: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor],
+def transform_any_array_to_torch(
+    batch,
 ):
-    # if isinstance(batch, (np.ndarray, torch.Tensor)):
-    #     if isinstance(batch, np.ndarray):
-    #         return torch.from_numpy(batch)
-    #     else:
-    #         return batch
-    # else:
-    #     return torch.stack([torch.from_numpy(obs) if isinstance(obs, np.ndarray) else obs for obs in batch], dim=0)
-    return torch.asarray(batch)
+    if isinstance(batch, np.ndarray):
+        return torch.from_numpy(batch)
+    elif isinstance(batch, torch.Tensor):
+        return batch
+    elif isinstance(batch, Iterable):
+        return torch.stack([transform_any_array_to_torch(b) for b in batch])
+    else:
+        return torch.asarray(batch)
 
 def transform_transition_batch_to_torch_tensor(
     batch: TransitionBatch
@@ -67,13 +67,13 @@ def transform_transition_batch_to_torch_tensor(
     return observations, actions, next_observations
 
 def transform_episodes_to_torch_tensors(
-    episodes: Iterable[EpisodeRollout]
+    episodes: Iterable[TransitionBatch]
 ) -> Iterable[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """
     Transforms a list of EpisodeRollout to NN friendly format
     returns Iterable(observations, actions, next_observations)
     """
-    length_maps : Dict[int, List[EpisodeRollout]] = {}
+    length_maps : Dict[int, List[TransitionBatch]] = {}
     for episode in episodes:
         if episode.length not in length_maps:
             length_maps[episode.length] = []

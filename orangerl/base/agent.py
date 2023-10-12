@@ -55,6 +55,10 @@ _ActT = TypeVar("_ActT")
 _StateT = TypeVar("_StateT")
 _LogProbT = TypeVar("_LogProbT", bound=SupportsFloat)
 class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], ABC):
+    is_sequence_model : bool
+    action_type: AgentActionType
+    np_random : Optional[np.random.Generator] = None
+
     def get_action(
         self, 
         observation : _ObsT, 
@@ -66,21 +70,6 @@ class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], ABC):
     @property
     def unwrapped(self) -> "Agent[_ObsT, _ActT]":
         return self
-
-    @property
-    @abstractproperty
-    def action_type(self) -> AgentActionType:
-        pass
-
-    @property
-    @abstractproperty
-    def is_sequence_model(self) -> bool:
-        pass
-    
-    @property
-    @abstractproperty
-    def np_random(self) -> Optional[np.random.Generator]:
-        pass
 
     @abstractmethod
     def get_action_batch(
@@ -94,7 +83,7 @@ class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], ABC):
     @abstractmethod
     def add_transitions(
         self, 
-        transition : Union[TransitionBatch[_ObsT, _ActT], EnvironmentStep[_ObsT, _ActT]],
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsT, _ActT]],
         stage : AgentStage = AgentStage.ONLINE
     ) -> None:
         pass
@@ -154,7 +143,7 @@ class AgentWrapper(Generic[_ObsWT, _ActWT, _StateWT, _LogProbWT], Agent[_ObsWT, 
 
     def add_transitions(
         self, 
-        transition : Union[TransitionBatch[_ObsWT, _ActWT], EnvironmentStep[_ObsWT, _ActWT]],
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsWT, _ActWT]],
         stage : AgentStage = AgentStage.ONLINE
     ):
         self._agent.add_transitions(transition, stage)
