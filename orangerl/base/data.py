@@ -52,7 +52,8 @@ class EnvironmentStep(Generic[_ObsST, _ActST]):
     def __eq__(self, __value: object) -> bool:
         return __value is self
 
-class TransitionBatch(Iterable[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST], ABC):
+_StepST = TypeVar("_StepST", bound=EnvironmentStep)
+class TransitionBatch(Iterable[_StepST], Generic[_StepST], ABC):
     is_single_episode: bool
     is_time_sorted: bool
 
@@ -61,10 +62,10 @@ class TransitionBatch(Iterable[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST,
         pass
 
     @abstractmethod
-    def __iter__(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
+    def __iter__(self) -> Iterator[_StepST]:
         pass
 
-    def copy_mutable(self) -> "MutableTransitionSequence[_ObsST, _ActST]":
+    def copy_mutable(self) -> "MutableTransitionSequence":
         """
         Copy this batch
         """
@@ -84,41 +85,88 @@ class TransitionBatch(Iterable[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST,
         ret += ")"
         return ret
 
-    def sample(self, batch_size : int, randomness : np.random.Generator, repeat_sample = True) -> Sequence[EnvironmentStep[_ObsST, _ActST]]:
-        """
-        Sample (without replacement unless data is insufficient) a minibatch from this batch
-        If repeat_sample is True, then we will repeat samples in the minibatch if data is insufficient
-        Otherwise, in the case that data is insufficient,
-          we will return a minibatch with length equal to len(self), less than batch_size
-        """
-        data_length = len(self)
-
-
-        num_selected_per_index = np.zeros(data_length, dtype=np.int32)
-        num_selected = 0
-        index_list = np.arange(data_length)
-
-        while num_selected < batch_size:
-            remaining_to_select = batch_size - num_selected
-
-            if data_length <= remaining_to_select:
-                num_selected_per_index[:] += 1
-                num_selected += data_length
-                if not repeat_sample:
-                    break
-            else:
-                randomness.shuffle(index_list)
-                num_selected_per_index[index_list[:remaining_to_select]] += 1
-                num_selected += remaining_to_select
-        
-        new_steps : List[EnvironmentStep] = []
-        for idx, step in enumerate(self):
-            if num_selected_per_index[idx] > 0:
-                new_steps.append([step] * num_selected_per_index[idx])
-
-        return new_steps
+_BatchT = TypeVar("_BatchT", bound=TransitionBatch)
+class TransitionSampler(Generic[_BatchT], Iterable[_StepST]):
+    @abstractmethod
+    def seed(self, seed : Optional[int] = None) -> None:
+        pass
     
-class TransitionSequence(TransitionBatch[_ObsST, _ActST], Sequence[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST]):
+    @abstractmethod
+    def sample(
+        self,
+        transition_batch : _BatchT,
+        batch_size : int,
+        **kwargs
+    ) -> Sequence[EnvironmentStep]:
+        pass
+
+class EnvironmentStepInSeq(EnvironmentStep[_ObsST, _ActST], Generic[_ObsST, _ActST]):
+    seq: "TransitionSequence[_ObsST, _ActST]"
+    idx: int
+
+    def __init__(self, seq: "TransitionSequence[_ObsST, _ActST]", idx: int) -> None:
+        self.seq = seq
+        self.idx = idx
+
+    @property
+    def observation(self) -> _ObsST:
+        return self.seq.observations[self.idx]
+
+    @property
+    def action(self) -> _ActST:
+        return self.seq.actions[self.idx]
+    
+    @property
+    def next_observation(self) -> _ObsST:
+        return self.seq.next_observations[self.idx]
+    
+    @property
+    def reward(self) -> SupportsFloat:
+        return self.seq.rewards[self.idx]
+    
+    @property
+    def terminated(self) -> bool:
+        return self.seq.terminations[self.idx]
+    
+    @property
+    def truncated(self) -> bool:
+        return self.seq.truncations[self.idx]
+    
+    @property
+    def info(self) -> Dict[str, Any]:
+        return self.seq.infos[self.idx]
+    
+    @property
+    def prev(self) -> Optional["EnvironmentStepInSeq[_ObsST, _ActST]"]:
+        if self.is_first_in_seq:
+            return None
+        else:
+            return EnvironmentStepInSeq(self.seq, self.idx - 1)
+    
+    @property
+    def next(self) -> Optional["EnvironmentStepInSeq[_ObsST, _ActST]"]:
+        if self.is_last_in_seq:
+            return None
+        else:
+            return EnvironmentStepInSeq(self.seq, self.idx + 1)
+    
+    @property
+    def is_first_in_seq(self) -> bool:
+        return self.idx == 0
+    
+    @property
+    def is_last_in_seq(self) -> bool:
+        return self.idx == len(self.seq) - 1
+    
+    @property
+    def is_start_of_episode(self) -> bool:
+        return self.is_first_in_seq or self.prev.terminated or self.prev.truncated
+    
+    @property
+    def is_end_of_episode(self) -> bool:
+        return self.is_last_in_seq or self.terminated or self.truncated
+
+class TransitionSequence(TransitionBatch[EnvironmentStepInSeq[_ObsST, _ActST]], Sequence[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST]):
     def __init__(
         self,
         observations: Sequence[_ObsST],
@@ -148,7 +196,7 @@ class TransitionSequence(TransitionBatch[_ObsST, _ActST], Sequence[EnvironmentSt
         steps: Iterable[EnvironmentStep[_ObsST, _ActST]], 
         is_single_episode: Optional[bool] = None,
         is_time_sorted: Optional[bool] = None
-    ) -> "TransitionSequence[_ObsST, _ActST]":
+    ) -> "TransitionSequence[_ObsST,_ActST]":
         if (
             isinstance(steps, TransitionSequence) and
             isinstance(steps.observations, list) and
@@ -215,19 +263,11 @@ class TransitionSequence(TransitionBatch[_ObsST, _ActST], Sequence[EnvironmentSt
     def __contains__(self, value: object) -> bool:
         return isinstance(value, EnvironmentStep) and value in self.__iter__()
     
-    def __iter__(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
+    def __iter__(self) -> Iterator[EnvironmentStepInSeq[_ObsST, _ActST]]:
         for idx in range(len(self)):
-            yield EnvironmentStep(
-                self.observations[idx],
-                self.actions[idx],
-                self.next_observations[idx],
-                self.rewards[idx],
-                self.terminations[idx],
-                self.truncations[idx],
-                self.infos[idx]
-            )
+            yield EnvironmentStepInSeq(self, idx)
     
-    def __getitem__(self, index: Union[int, slice]) -> Union[EnvironmentStep[_ObsST, _ActST], "TransitionSequence[_ObsST,_ActST]"]:
+    def __getitem__(self, index: Union[int, slice]) -> Union[EnvironmentStepInSeq[_ObsST, _ActST], "TransitionSequence[_ObsST,_ActST]"]:
         if isinstance(index, slice):
             return TransitionSequence(
                 self.observations[index],
@@ -241,18 +281,25 @@ class TransitionSequence(TransitionBatch[_ObsST, _ActST], Sequence[EnvironmentSt
                 self.is_time_sorted
             )
         else:
-            return EnvironmentStep(
-                self.observations[index],
-                self.actions[index],
-                self.next_observations[index],
-                self.rewards[index],
-                self.terminations[index],
-                self.truncations[index],
-                self.infos[index]
-            )
+            if not isinstance(index, int):
+                raise TypeError("Index must be an integer or slice")
+            return EnvironmentStepInSeq(self, index)
     
-    def __add__(self, other : Iterable[EnvironmentStep[_ObsST, _ActST]]) -> "TransitionSequence[_ObsST,_ActST]":
+    def __add__(self, other : Union[EnvironmentStep[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST, _ActST]]]) -> "TransitionSequence[_ObsST,_ActST]":
         other_trans : Optional[TransitionSequence[_ObsST,_ActST]] = None
+        if isinstance(other, EnvironmentStep):
+            to_ret = __class__(
+                self.observations + [other.observation],
+                self.actions + [other.action],
+                self.next_observations + [other.next_observation],
+                self.rewards + [other.reward],
+                self.terminations + [other.terminated],
+                self.truncations + [other.truncated],
+                self.infos + [other.info],
+                self.is_single_episode,
+                self.is_time_sorted
+            )
+            return to_ret
         if isinstance(other, TransitionSequence):
             other_trans = other
         elif isinstance(other, Iterable):
@@ -271,24 +318,6 @@ class TransitionSequence(TransitionBatch[_ObsST, _ActST], Sequence[EnvironmentSt
                 self.infos + other_trans.infos,
                 False,
                 self.is_time_sorted and other_trans.is_time_sorted
-            )
-    
-    def __radd__(self, other : Iterable[EnvironmentStep[_ObsST, _ActST]]) -> "TransitionSequence[_ObsST,_ActST]":
-        other_trans = None
-        if isinstance(other, TransitionSequence) or isinstance(other, Iterable):
-            other_trans = TransitionSequence.from_steps(other, False, False)
-
-        if other_trans is None:
-            raise TypeError(f"Cannot add {self} to {other}")
-        else:
-            return __class__(
-                other_trans.observations + self.observations,
-                other_trans.actions + self.actions,
-                other_trans.next_observations + self.next_observations,
-                other_trans.rewards + self.rewards,
-                other_trans.terminations + self.terminations,
-                other_trans.truncations + self.truncations,
-                other_trans.infos + self.infos
             )
 
     def __mul__(self, n : int) -> "TransitionSequence[_ObsST,_ActST]":
@@ -328,20 +357,8 @@ class MutableTransitionSequence(TransitionSequence[_ObsST, _ActST], MutableSeque
         self.infos = infos
         self.is_single_episode = is_single_episode
         self.is_time_sorted = is_time_sorted
-
-    def __iter__(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
-        for idx in range(len(self)):
-            yield EnvironmentStep(
-                self.observations[idx],
-                self.actions[idx],
-                self.next_observations[idx],
-                self.rewards[idx],
-                self.terminations[idx],
-                self.truncations[idx],
-                self.infos[idx]
-            )
     
-    def __getitem__(self, index: Union[int, slice]) -> Union[EnvironmentStep[_ObsST, _ActST], "MutableTransitionSequence[_ObsST,_ActST]"]:
+    def __getitem__(self, index: Union[int, slice]) -> Union[EnvironmentStepInSeq[_ObsST, _ActST], "MutableTransitionSequence[_ObsST,_ActST]"]:
         if isinstance(index, slice):
             return MutableTransitionSequence(
                 self.observations[index],
@@ -353,15 +370,9 @@ class MutableTransitionSequence(TransitionSequence[_ObsST, _ActST], MutableSeque
                 self.infos[index]
             )
         else:
-            return EnvironmentStep(
-                self.observations[index],
-                self.actions[index],
-                self.next_observations[index],
-                self.rewards[index],
-                self.terminations[index],
-                self.truncations[index],
-                self.infos[index]
-            )
+            if not isinstance(index, int):
+                raise TypeError("Index must be an integer or slice")
+            return EnvironmentStepInSeq(self, index)
     
     def __setitem__(self, index: Union[int, slice], value: Union[EnvironmentStep[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST,_ActST]]]) -> None:
         if isinstance(index, slice):
@@ -381,6 +392,8 @@ class MutableTransitionSequence(TransitionSequence[_ObsST, _ActST], MutableSeque
             self.truncations[index] = v_mutable.truncations
             self.infos[index] = v_mutable.infos
         else:
+            if not isinstance(index, int):
+                raise TypeError("Index must be an integer or slice")
             assert isinstance(value, EnvironmentStep)
             self.observations[index] = value.observation
             self.actions[index] = value.action
@@ -399,9 +412,13 @@ class MutableTransitionSequence(TransitionSequence[_ObsST, _ActST], MutableSeque
         del self.truncations[index]
         del self.infos[index]
     
-    def __add__(self, other : Iterable[EnvironmentStep[_ObsST, _ActST]]) -> "MutableTransitionSequence[_ObsST,_ActST]":
+    def __add__(self, other : Union[EnvironmentStep[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST, _ActST]]]) -> "MutableTransitionSequence[_ObsST,_ActST]":
         other_mutable : Optional[MutableTransitionSequence[_ObsST,_ActST]] = None
-        if isinstance(other, MutableTransitionSequence):
+        if isinstance(other, EnvironmentStep):
+            new : MutableTransitionSequence = __class__.from_steps(self)
+            new.append(other)
+            return new
+        elif isinstance(other, MutableTransitionSequence):
             other_mutable = other
         elif isinstance(other, Iterable):
             other_mutable = MutableTransitionSequence.from_steps(other)
@@ -419,29 +436,12 @@ class MutableTransitionSequence(TransitionSequence[_ObsST, _ActST], MutableSeque
                 self.infos + other_mutable.infos
             )
     
-    def __radd__(self, other : Iterable[EnvironmentStep[_ObsST, _ActST]]) -> "MutableTransitionSequence[_ObsST,_ActST]":
+    def __iadd__(self, other : Union[EnvironmentStep[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST, _ActST]]]) -> "MutableTransitionSequence[_ObsST,_ActST]":
         other_mutable = None
-        if isinstance(other, MutableTransitionSequence):
-            other_mutable = other.copy_mutable()
-        elif isinstance(other, Iterable):
-            other_mutable = MutableTransitionSequence.from_steps(other)
-
-        if other_mutable is None:
-            raise TypeError(f"Cannot add {self} to {other}")
-        else:
-            return MutableTransitionSequence(
-                other_mutable.observations + self.observations,
-                other_mutable.actions + self.actions,
-                other_mutable.next_observations + self.next_observations,
-                other_mutable.rewards + self.rewards,
-                other_mutable.terminations + self.terminations,
-                other_mutable.truncations + self.truncations,
-                other_mutable.infos + self.infos
-            )
-    
-    def __iadd__(self, other : Iterable[EnvironmentStep[_ObsST, _ActST]]) -> "MutableTransitionSequence[_ObsST,_ActST]":
-        other_mutable = None
-        if isinstance(other, MutableTransitionSequence):
+        if isinstance(other, EnvironmentStep):
+            self.append(other)
+            return self
+        elif isinstance(other, MutableTransitionSequence):
             other_mutable = other
         elif isinstance(other, Iterable):
             other_mutable = MutableTransitionSequence.from_steps(other)
