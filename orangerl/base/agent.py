@@ -41,41 +41,48 @@ class AgentOutput(Generic[_ActOutputT, _StateOutputT, _LogProbOutputT]):
     state: _StateOutputT
 
 _ObsT = TypeVar("_ObsT")
-_ActT = TypeVar("_ActT")
-_ActOT = TypeVar("_ActOT")
-_StateT = TypeVar("_StateT")
-_StateOT = TypeVar("_StateOT")
-_LogProbOT = TypeVar("_LogProbOT", bound=SupportsFloat)
-class Agent(Generic[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT], ABC):
+_ActInputT = TypeVar("_ActInputT")
+_StateInputT = TypeVar("_StateInputT")
+class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], ABC):
     is_sequence_model : bool
     action_type: AgentActionType
-    np_random : Optional[np.random.Generator] = None
 
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateT], 
+        state : Optional[_StateInputT], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActOT, _StateOT, _LogProbOT]:
+    ) -> AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]:
         return next(iter(self.get_action_batch([observation], None, stage))) if state is None else next(iter(self.get_action_batch([observation], [state], stage)))
 
     @property
-    def unwrapped(self) -> "Agent[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT]":
+    def unwrapped(self) -> "Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]":
         return self
+    
+    @property
+    def transform_parent(self) -> Optional["Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]"]:
+        return None
+
+    @abstractmethod
+    def seed(
+        self, 
+        seed : Optional[int] = None
+    ) -> None:
+        pass
 
     @abstractmethod
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateT]]], 
+        states : Optional[Iterable[Optional[_StateInputT]]], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActOT, _StateOT, _LogProbOT]]:
+    ) -> Iterable[AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]]:
         pass
 
     @abstractmethod
     def add_transitions(
         self, 
-        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsT, _ActT]],
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
         stage : AgentStage = AgentStage.ONLINE
     ) -> None:
         pass
@@ -84,8 +91,8 @@ class Agent(Generic[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT], ABC):
     def update(self, stage: AgentStage = AgentStage.ONLINE, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
         pass
 
-class AgentWrapper(Generic[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT], Agent[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT]):
-    def __init__(self, agent : Agent[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT]) -> None:
+class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]):
+    def __init__(self, agent : Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]) -> None:
         Agent.__init__(self)
         self._agent = agent
 
@@ -95,8 +102,12 @@ class AgentWrapper(Generic[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT],
         return getattr(self._agent, __name)
 
     @property
-    def unwrapped(self) -> Agent[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT]:
+    def unwrapped(self) -> Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]:
         return self._agent.unwrapped
+
+    @property
+    def transform_parent(self) -> Optional[Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]]:
+        return self._agent
 
     @property
     def action_type(self) -> AgentActionType:
@@ -113,22 +124,28 @@ class AgentWrapper(Generic[_ObsT, _ActT, _ActOT, _StateT, _StateOT, _LogProbOT],
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateT], 
+        state : Optional[_StateInputT], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActOT, _StateOT, _LogProbOT]:
+    ) -> AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]:
         return Agent.get_action(self, observation, state, stage)
     
+    def seed(
+        self, 
+        seed : Optional[int] = None
+    ) -> None:
+        self._agent.seed(seed)
+
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateT]]], 
+        states : Optional[Iterable[Optional[_StateInputT]]], 
         stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActOT, _StateOT, _LogProbOT]]:
+    ) -> Iterable[AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]]:
         return self._agent.get_action_batch(observations, states, stage)
 
     def add_transitions(
         self, 
-        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsT, _ActT]],
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
         stage : AgentStage = AgentStage.ONLINE
     ) -> None:
         self._agent.add_transitions(transition, stage)
