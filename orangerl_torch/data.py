@@ -15,10 +15,11 @@
 """
 
 from orangerl.base.data import TransitionBatch, EnvironmentStep, TransitionSequence
-from tensordict import tensorclass, TensorDictBase, TensorDict
+from tensordict import tensorclass, TensorDictBase, TensorDict, is_tensor_collection
 import torch
 from typing import Iterator, Optional, Iterable, Union, MutableSequence, Dict, Any, Sequence
 import numpy as np
+from functools import reduce
 
 Tensor_Or_Numpy = Union[torch.Tensor, np.ndarray]
 
@@ -60,8 +61,8 @@ class NNBatch(TransitionSequence[torch.Tensor, torch.Tensor]):
     truncations: torch.Tensor
     masks: Optional[torch.Tensor]
     infos: Optional[TensorDict]
-    is_transition_single_episode : bool
-    is_transition_time_sorted : bool
+    is_transition_single_episode : bool = False
+    is_transition_time_sorted : bool = False
     
     @property
     def transition_len(self) -> int:
@@ -123,3 +124,57 @@ class NNBatch(TransitionSequence[torch.Tensor, torch.Tensor]):
                 ) for i in index
             ]
 
+def info_dict_to_tensor_dict(info_dict : Dict[str, Any]) -> TensorDictBase:
+    if is_tensor_collection(info_dict):
+        return info_dict
+    else:
+        copy_dict = {}
+        for k, v in info_dict.items():
+            if is_tensor_collection(v) or isinstance(v, torch.Tensor):
+                copy_dict[k] = v
+            if isinstance(v, dict):
+                copy_dict[k] = info_dict_to_tensor_dict(v)
+            elif isinstance(v, np.ndarray):
+                copy_dict[k] = torch.from_numpy(v)
+            elif isinstance(v, int):
+                copy_dict[k] = torch.tensor(v, dtype=torch.int)
+            elif isinstance(v, float):
+                copy_dict[k] = torch.tensor(v, dtype=torch.float)
+            elif isinstance(v, bool):
+                copy_dict[k] = torch.tensor(v, dtype=torch.bool)
+            else:
+                continue
+        return TensorDict(copy_dict, batch_size=())
+
+def nnbatch_from_transitions(
+    transitions : Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]],
+    is_transition_single_episode : bool,
+    is_transition_time_sorted : bool,
+    save_info : bool = False
+) -> NNBatch:
+    if isinstance(transitions, NNBatch):
+        return transitions
+    elif is_tensor_collection(transitions):
+        return NNBatch.from_tensordict(transitions)
+    
+    transitions = transitions if isinstance(transitions, Sequence) else list(transitions)
+    transformed_infos = torch.stack([info_dict_to_tensor_dict(step.info) for step in transitions]) if save_info and reduce(
+        lambda x, y: x and y, 
+        [step.info is not None for step in transitions],
+        True
+    ) else None
+
+    ret_data = NNBatch(
+        observations=torch.stack([transform_any_array_to_torch(step.observation) for step in transitions]),
+        actions=torch.stack([transform_any_array_to_torch(step.action) for step in transitions]),
+        rewards=torch.tensor([step.reward for step in transitions], dtype=torch.float32),
+        next_observations=transform_any_array_to_torch([step.next_observation for step in transitions]),
+        terminations=torch.tensor([step.terminated for step in transitions], dtype=torch.bool),
+        truncations=torch.tensor([step.truncated for step in transitions], dtype=torch.bool),
+        masks=None,
+        infos=transformed_infos,
+        is_transition_single_episode=is_transition_single_episode,
+        is_transition_time_sorted=is_transition_time_sorted,
+        batch_size=(len(transitions),)
+    )
+    return ret_data

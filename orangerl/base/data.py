@@ -261,6 +261,13 @@ class TransitionReplayBuffer(TransitionSequence[_ObsST, _ActST], MutableSequence
         """
         pass
 
+    @abstractmethod
+    def clear(self) -> None:
+        """
+        Clear the buffer
+        """
+        pass
+
     def __iadd__(self, values: Union[EnvironmentStep[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST, _ActST]], TransitionBatch[_ObsST, _ActST]]) -> "TransitionReplayBuffer[_ObsST,_ActST]":
         if isinstance(values, EnvironmentStep):
             self.append(values)

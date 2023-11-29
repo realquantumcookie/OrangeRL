@@ -1,14 +1,16 @@
 from orangerl.base.data import TransitionBatch, EnvironmentStep, TransitionReplayBuffer, TransitionTransformation, TransitionSampler
 from orangerl.data.samplers import UniformTransitionSampler
-from .data import NNBatch, transform_any_array_to_torch
-from tensordict import TensorDictBase
+from .data import NNBatch, transform_any_array_to_torch, nnbatch_from_transitions
+from tensordict import TensorDictBase, TensorDict, is_tensor_collection
 from torchrl.data.replay_buffers.storages import Storage, ListStorage, TensorStorage, LazyTensorStorage, LazyMemmapStorage
 import torch
-from typing import Optional, Callable, Any, Tuple, Union, Dict, Sequence, List, TypeVar, Generic
+from typing import Optional, Callable, Any, Tuple, Union, Dict, Sequence, List, TypeVar, Generic, Iterable
 import collections
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import numpy as np
+from .data import Tensor_Or_Numpy
+from asyncio import Future
 
 def pin_memory(output: TensorDictBase) -> NNBatch:
     if output.device == torch.device("cpu"):
@@ -39,6 +41,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         sampler : TransitionSampler = UniformTransitionSampler(),
         pin_output_memory: bool = False,
         num_prefetch: Optional[int] = None,
+        save_info: bool = False,
         sample_repeat : bool = True,
         sample_transforms: List[TransitionTransformation] = [],
     ) -> None:
@@ -49,11 +52,12 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         self.pin_output_memory = pin_output_memory
         assert num_prefetch is None or num_prefetch > 0, "prefetch number must be None or > 0"
         self._prefetch_num = num_prefetch
-        self.prefetch_queue = None if num_prefetch is None else collections.deque(maxlen=num_prefetch)
+        self._prefetch_queue : collections.deque[Future] = None if num_prefetch is None else collections.deque(maxlen=num_prefetch)
 
         if self._prefetch_num is not None:
             self._prefetch_executor = ThreadPoolExecutor(max_workers=self._prefetch_num)
 
+        self.save_info = save_info
         self.sample_repeat = sample_repeat
         self.sample_transforms = sample_transforms
 
@@ -126,92 +130,54 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         self._storage.load_state_dict(state_dict["_storage"])
         self._write_cursor = state_dict["_write_cursor"]
 
-    def append(self, step : EnvironmentStep[torch.Tensor, torch.Tensor]) -> int:
-        """Add a single element to the replay buffer.
+    def append(self, step : EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]) -> None:
+        step_data = nnbatch_from_transitions([step])[0]
+        self._add(step_data)
 
-        Args:
-            data (Any): data to be added to the replay buffer
-
-        Returns:
-            index where the data lives in the replay buffer.
-        """
-        if self._transform is not None and (
-            is_tensor_collection(data) or len(self._transform)
-        ):
-            data = self._transform.inv(data)
-        return self._add(data)
-
-    def _add(self, data):
+    def _add(self, data : TensorDictBase) -> None:
+        assert data.batch_size == (), "data must be a single transition"
         with self._replay_lock:
-            index = self._writer.add(data)
-            self._sampler.add(index)
+            index = self._write_cursor
+            self._storage[index] = data
+            self._write_cursor = (self._write_cursor + 1) % self.capacity
         return index
 
-    def _extend(self, data: Sequence) -> torch.Tensor:
+    def _extend(self, data: TensorDictBase) -> Sequence[int]:
+        assert data.ndim == 1, "data must be a batch of transitions"
         with self._replay_lock:
-            index = self._writer.extend(data)
-            self._sampler.extend(index)
+            index = np.arange(self._write_cursor, self._write_cursor + data.size(0) + 1) % self.capacity
+            self._storage[index[:-1]] = data
+            self._write_cursor = index[-1]
         return index
 
-    def extend(self, data: Sequence) -> torch.Tensor:
-        """Extends the replay buffer with one or more elements contained in an iterable.
-
-        If present, the inverse transforms will be called.`
-
-        Args:
-            data (iterable): collection of data to be added to the replay
-                buffer.
-
-        Returns:
-            Indices of the data added to the replay buffer.
-        """
-        if self._transform is not None and (
-            is_tensor_collection(data) or len(self._transform)
-        ):
-            data = self._transform.inv(data)
-        return self._extend(data)
-
-    def update_priority(
-        self,
-        index: Union[int, torch.Tensor],
-        priority: Union[int, torch.Tensor],
-    ) -> None:
-        with self._replay_lock:
-            self._sampler.update_priority(index, priority)
+    def extend(self, data: Union[Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], TransitionBatch[Tensor_Or_Numpy, Tensor_Or_Numpy]]) -> None:
+        if is_tensor_collection(data):
+            data_dict = data
+        else:
+            data_dict = nnbatch_from_transitions(data)
+        return self._extend(data_dict)
 
     @pin_memory_output
-    def _sample(self, batch_size: int) -> Tuple[Any, dict]:
+    def _sample(self, **kwargs) -> NNBatch:
         with self._replay_lock:
-            index, info = self._sampler.sample(self._storage, batch_size)
-            info["index"] = index
+            index = self._sampler.sample_idx(self, self.sample_batch_size, self.sample_repeat, **kwargs)
             data = self._storage[index]
-        if not isinstance(index, INT_CLASSES):
-            data = self._collate_fn(data)
-        if self._transform is not None and len(self._transform):
-            is_td = True
-            if not is_tensor_collection(data):
-                data = TensorDict({"data": data}, [])
-                is_td = False
-            is_locked = data.is_locked
-            if is_locked:
-                data.unlock_()
-            data = self._transform(data)
-            if is_locked:
-                data.lock_()
-            if not is_td:
-                data = data["data"]
+        for transform in self.sample_transforms:
+            data = transform.transform_batch(data)
+        return data
 
-        return data, info
-
-    def empty(self):
+    def clear(self):
         """Empties the replay buffer and reset cursor to 0."""
-        self._writer._empty()
-        self._sampler._empty()
-        self._storage._empty()
+        with self._replay_lock:
+            self._write_cursor = 0
+            self._storage._empty()
+        with self._futures_lock:
+            self._prefetch_queue.clear()
 
     def sample(
-        self, batch_size: Optional[int] = None, return_info: bool = False
-    ) -> Any:
+        self,
+        **kwargs,
+    ) -> NNBatch:
         """Samples a batch of data from the replay buffer.
 
         Uses Sampler to sample indices, and retrieves them from Storage.
@@ -227,59 +193,28 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
             A batch of data selected in the replay buffer.
             A tuple containing this batch and info if return_info flag is set to True.
         """
-        if (
-            batch_size is not None
-            and self._batch_size is not None
-            and batch_size != self._batch_size
-        ):
-            warnings.warn(
-                f"Got conflicting batch_sizes in constructor ({self._batch_size}) "
-                f"and `sample` ({batch_size}). Refer to the ReplayBuffer documentation "
-                "for a proper usage of the batch-size arguments. "
-                "The batch-size provided to the sample method "
-                "will prevail."
-            )
-        elif batch_size is None and self._batch_size is not None:
-            batch_size = self._batch_size
-        elif batch_size is None:
-            raise RuntimeError(
-                "batch_size not specified. You can specify the batch_size when "
-                "constructing the replay buffer, or pass it to the sample method. "
-                "Refer to the ReplayBuffer documentation "
-                "for a proper usage of the batch-size arguments."
-            )
-        if not self._prefetch:
-            ret = self._sample(batch_size)
+        if self._prefetch_num is None:
+            ret = self._sample(**kwargs)
         else:
             if len(self._prefetch_queue) == 0:
-                ret = self._sample(batch_size)
+                ret = self._sample(**kwargs)
             else:
                 with self._futures_lock:
                     ret = self._prefetch_queue.popleft().result()
 
             with self._futures_lock:
-                while len(self._prefetch_queue) < self._prefetch_cap:
-                    fut = self._prefetch_executor.submit(self._sample, batch_size)
+                while len(self._prefetch_queue) < self._prefetch_num:
+                    fut = self._prefetch_executor.submit(self._sample, **kwargs)
                     self._prefetch_queue.append(fut)
-
-        if return_info:
-            return ret
-        return ret[0]
+        
+        return ret
 
     def mark_update(self, index: Union[int, torch.Tensor]) -> None:
-        pass
+        """
+        Used by torchrl Storage to mark that the data at the given index has been updated.
+        """
 
-    def __iter__(self):
-        if self._sampler.ran_out:
-            self._sampler.ran_out = False
-        if self._batch_size is None:
-            raise RuntimeError(
-                "Cannot iterate over the replay buffer. "
-                "Batch_size was not specified during construction of the replay buffer."
-            )
-        while not self._sampler.ran_out:
-            data = self.sample()
-            yield data
+        pass
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
