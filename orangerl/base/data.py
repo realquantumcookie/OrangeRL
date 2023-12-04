@@ -57,12 +57,10 @@ class TransitionTransformation(Generic[_ObsST, _ActST]):
     def transform_transition(self, transition : EnvironmentStep[_ObsST, _ActST]) -> EnvironmentStep[_ObsST, _ActST]:
         pass
     
-    def transform_batch(self, batch : Sequence[EnvironmentStep[_ObsST, ]]) -> Sequence[EnvironmentStep[_ObsST, _ActST]]:
+    def transform_batch(self, batch : Sequence[EnvironmentStep[_ObsST, _ActST]], **kwargs) -> Sequence[EnvironmentStep[_ObsST, _ActST]]:
         return [self.transform_transition(transition) for transition in batch]
 
-class TransitionBatch(Iterable[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST], ABC):
-    is_transition_single_episode: bool
-    is_transition_time_sorted: bool
+class TransitionBatch(Generic[_ObsST, _ActST], ABC):
     transition_len : int
 
     @abstractmethod
@@ -92,17 +90,13 @@ class TransitionBatch(Iterable[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST,
     #     return ret
 
 class TransitionSequence(TransitionBatch[_ObsST, _ActST], Generic[_ObsST, _ActST], ABC):
-    is_transition_single_episode: bool
-    is_transition_time_sorted: bool
     transition_len : int
 
     @staticmethod
     def from_iterable(
-        iterable: Iterable[EnvironmentStep[_ObsST, _ActST]],
-        is_transition_single_episode: bool,
-        is_transition_time_sorted: bool,
+        iterable: Iterable[EnvironmentStep[_ObsST, _ActST]]
     ) -> "TransitionSequence[_ObsST, _ActST]":
-        return TransitionSequenceListImpl(iterable, is_transition_single_episode, is_transition_time_sorted)
+        return TransitionSequenceListImpl(iterable)
 
     @abstractmethod
     def iter_transitions(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
@@ -115,16 +109,12 @@ class TransitionSequence(TransitionBatch[_ObsST, _ActST], Generic[_ObsST, _ActST
 class TransitionSequenceListImpl(TransitionSequence[_ObsST, _ActST], Generic[_ObsST, _ActST], MutableSequence[EnvironmentStep[_ObsST, _ActST]]):
     def __init__(
         self,
-        iterable: Iterable[EnvironmentStep[_ObsST, _ActST]],
-        is_transition_single_episode: bool,
-        is_transition_time_sorted: bool,
+        iterable: Iterable[EnvironmentStep[_ObsST, _ActST]]
     ):
         if isinstance(iterable, Sequence):
             self._transitions = iterable
         else:
             self._transitions = list(iterable)
-        self.is_transition_single_episode = is_transition_single_episode
-        self.is_transition_time_sorted = is_transition_time_sorted
     
     @property
     def transition_len(self) -> int:
@@ -211,13 +201,19 @@ class TransitionSampler(Generic[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST
         batch_size : int,
         repeat_sample = True,
         **kwargs
-    ) -> Sequence[int]:
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """
+        Sample indices from the transition batch
+        Output:
+            sample_idx: np.ndarray
+                The sampled indices
+            sample_mask: Optional[np.ndarray]
+                The mask of the sampled indices
+        """
         pass
 
 _SampleOutputT = TypeVar("_SampleOutputT")
 class TransitionReplayBuffer(TransitionSequence[_ObsST, _ActST], MutableSequence[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST, _SampleOutputT], ABC):
-    is_transition_single_episode : bool = False
-    is_transition_time_sorted : bool = True
     transition_len : int
     capacity : Optional[int] = None
     sampler: TransitionSampler[_ObsST, _ActST]
@@ -229,6 +225,15 @@ class TransitionReplayBuffer(TransitionSequence[_ObsST, _ActST], MutableSequence
     def iter_transitions(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
         pass
     
+    @abstractmethod
+    def idx_episode_begins_and_ends(self) -> Sequence[Tuple[int, int]]:
+        """
+        Returns a list of tuples (begin, end) where each tuple represents the beginning and end of an episode
+        Note that some end indices may be >= len(self), which means that it should be read as end % len(self)
+        """
+
+        pass
+
     @abstractmethod
     def transitions_at(self, index: Union[int, slice, Sequence[int]]) -> Union[EnvironmentStep[_ObsST, _ActST], Sequence[EnvironmentStep[_ObsST, _ActST]]]:
         pass

@@ -1,8 +1,7 @@
-from orangerl.base.data import TransitionBatch, EnvironmentStep, TransitionReplayBuffer, TransitionTransformation, TransitionSampler
-from orangerl.data.samplers import UniformTransitionSampler
+from orangerl import TransitionBatch, EnvironmentStep, TransitionReplayBuffer, TransitionTransformation, TransitionSampler, UniformTransitionSampler
 from .data import NNBatch, transform_any_array_to_torch, nnbatch_from_transitions
 from tensordict import TensorDictBase, TensorDict, is_tensor_collection
-from torchrl.data.replay_buffers.storages import Storage, ListStorage, TensorStorage, LazyTensorStorage, LazyMemmapStorage
+from torchrl.data.replay_buffers.storages import Storage, ListStorage, LazyTensorStorage, LazyMemmapStorage
 import torch
 from typing import Optional, Callable, Any, Tuple, Union, Dict, Sequence, List, TypeVar, Generic, Iterable
 import collections
@@ -12,7 +11,7 @@ import numpy as np
 from .data import Tensor_Or_Numpy
 from asyncio import Future
 
-def pin_memory(output: TensorDictBase) -> NNBatch:
+def pin_memory(output: Union[TensorDictBase, torch.Tensor]) -> NNBatch:
     if output.device == torch.device("cpu"):
         return output.pin_memory()
     else:
@@ -30,9 +29,6 @@ def pin_memory_output(fun) -> Callable:
     return decorated_fun
 
 class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
-    is_transition_single_episode : bool = False
-    is_transition_time_sorted : bool = True
-
     def __init__(
         self,
         *,
@@ -43,7 +39,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         num_prefetch: Optional[int] = None,
         save_info: bool = False,
         sample_repeat : bool = True,
-        sample_transforms: List[TransitionTransformation] = [],
+        sample_transforms: List[TransitionTransformation[torch.Tensor, torch.Tensor]] = [],
     ) -> None:
         storage.attach(self)
         self._storage = storage
@@ -60,6 +56,8 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         self.save_info = save_info
         self.sample_repeat = sample_repeat
         self.sample_transforms = sample_transforms
+
+        self._idx_episode_ends : List[int] = []
 
         self._replay_lock = threading.RLock()
         self._futures_lock = threading.RLock()
@@ -108,13 +106,46 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         
         return data
 
+    def idx_episode_begins_and_ends(self) -> Sequence[int]:
+        rst = []
+        
+        transition_length = self.transition_len
+        if transition_length == 0:
+            return rst
+        
+        with self._replay_lock:
+            if transition_length == self.capacity:
+                firstepisode_start = self._write_cursor
+                lastepisode_end = self._write_cursor - 1
+            else:
+                firstepisode_start = 0
+                lastepisode_end = transition_length - 1
+
+            if len(self._idx_episode_ends) == 0:
+                return [(firstepisode_start, lastepisode_end)]
+            
+            firstepisode_end_idx = -1
+            for i, idx in enumerate(self._idx_episode_ends):
+                if idx >= firstepisode_start:
+                    firstepisode_end_idx = i
+                    break
+            if firstepisode_end_idx < 0:
+                firstepisode_end_idx = 0
+            for i_ep in range(len(self._idx_episode_ends) + 1):
+                start_ep = (self._idx_episode_ends[(firstepisode_end_idx + i_ep - 1) % len(self._idx_episode_ends)] + 1) % transition_length if i_ep > 0 else firstepisode_start
+                end_ep = self._idx_episode_ends[(firstepisode_end_idx + i_ep) % len(self._idx_episode_ends)] if i_ep < len(self._idx_episode_ends) else lastepisode_end
+                if end_ep < start_ep:
+                    end_ep += self.capacity
+                rst.append((start_ep, end_ep))
+        return rst
+
     @pin_memory_output
     def transitions_at(self, index: Union[int, slice, Sequence[int]]) -> NNBatch:
         with self._replay_lock:
             data = self._storage[index]
         
         if not isinstance(index, NNBatch):
-            data = torch.stack(data, dim=0)
+            data = torch.stack(data, dim=0).flatten()
         
         return data
 
@@ -136,20 +167,74 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
 
     def _add(self, data : TensorDictBase) -> None:
         assert data.batch_size == (), "data must be a single transition"
+        assert data['masks'] is None or data['masks'].all(), "masks must be None or all True"
+        
+        to_insert = NNBatch(
+            observations = data['observations'],
+            actions = data['actions'],
+            rewards = data['rewards'],
+            next_observations = data['next_observations'],
+            terminations = data['terminations'],
+            truncations = data['truncations'],
+            masks=None,
+            infos = data['infos'] if self.save_info and 'infos' in data.keys() else None,
+            batch_size=()
+        )
+        
         with self._replay_lock:
             index = self._write_cursor
-            self._storage[index] = data
+            self._storage[index] = to_insert
             self._write_cursor = (self._write_cursor + 1) % self.capacity
+            
+            idx_in_episode_ends = index in self._idx_episode_ends
+            if torch.logical_or(to_insert['terminations'], to_insert['truncations']).any():
+                if not idx_in_episode_ends:
+                    self._idx_episode_ends.append(index)
+                    self._idx_episode_ends.sort()
+            else:
+                if idx_in_episode_ends:
+                    self._idx_episode_ends.remove(index)
+        
         return index
 
     def _extend(self, data: TensorDictBase) -> Sequence[int]:
         assert data.ndim == 1, "data must be a batch of transitions"
-        with self._replay_lock:
-            index = np.arange(self._write_cursor, self._write_cursor + data.size(0) + 1) % self.capacity
-            self._storage[index[:-1]] = data
-            self._write_cursor = index[-1]
-        return index
+        data = data if data["masks"] is None else data[data["masks"]]
+        to_insert = NNBatch(
+            observations = data['observations'],
+            actions = data['actions'],
+            rewards = data['rewards'],
+            next_observations = data['next_observations'],
+            terminations = data['terminations'],
+            truncations = data['truncations'],
+            masks=None,
+            infos = data['infos'] if self.save_info and 'infos' in data.keys() else None,
+            batch_size=()
+        )
 
+        with self._replay_lock:
+            index = np.arange(self._write_cursor, self._write_cursor + to_insert.size(0) + 1) % self.capacity
+            self._storage[index[:-1]] = to_insert
+            self._write_cursor = index[-1]
+
+            # Update episode ends
+            episode_ends = torch.logical_or(to_insert['terminations'], to_insert['truncations']).cpu().numpy()
+            idx_in_episode_ends = np.isin(index[:-1], self._idx_episode_ends)
+            need_sort = False
+            for i, idx in enumerate(index[:-1]):
+                if episode_ends[i]:
+                    if not idx_in_episode_ends[i]:
+                        self._idx_episode_ends.append(idx)
+                        need_sort = True
+                else:
+                    if idx_in_episode_ends[i]:
+                        self._idx_episode_ends.remove(idx)
+            
+            if need_sort:
+                self._idx_episode_ends.sort()
+
+        return index
+ 
     def extend(self, data: Union[Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], TransitionBatch[Tensor_Or_Numpy, Tensor_Or_Numpy]]) -> None:
         if is_tensor_collection(data):
             data_dict = data
@@ -160,8 +245,12 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
     @pin_memory_output
     def _sample(self, **kwargs) -> NNBatch:
         with self._replay_lock:
-            index = self._sampler.sample_idx(self, self.sample_batch_size, self.sample_repeat, **kwargs)
-            data = self._storage[index]
+            index, mask = self._sampler.sample_idx(self, self.sample_batch_size, self.sample_repeat, **kwargs)
+            mask = torch.from_numpy(mask) if mask is not None else None
+            index = torch.from_numpy(index)
+            data : NNBatch = self._storage[index]
+            data.masks = mask.to(device=data.device, dtype=torch.bool) if mask is not None else None
+        
         for transform in self.sample_transforms:
             data = transform.transform_batch(data)
         return data
@@ -169,6 +258,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
     def clear(self):
         """Empties the replay buffer and reset cursor to 0."""
         with self._replay_lock:
+            self._idx_episode_ends = []
             self._write_cursor = 0
             self._storage._empty()
         with self._futures_lock:

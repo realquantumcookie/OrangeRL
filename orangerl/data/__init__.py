@@ -1,1 +1,1 @@
-from samplers import UniformTransitionSampler
+from .samplers import UniformTransitionSampler

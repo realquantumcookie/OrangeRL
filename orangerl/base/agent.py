@@ -38,7 +38,7 @@ _LogProbOutputT = TypeVar("_LogProbOutputT", bound=SupportsFloat)
 class AgentOutput(Generic[_ActOutputT, _StateOutputT, _LogProbOutputT]):
     action: _ActOutputT
     log_prob: _LogProbOutputT
-    state: _StateOutputT
+    state: Optional[_StateOutputT]
 
 _ObsT = TypeVar("_ObsT")
 _ActInputT = TypeVar("_ActInputT")
@@ -88,7 +88,7 @@ class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT,
         pass
 
     @abstractmethod
-    def update(self, stage: AgentStage = AgentStage.ONLINE, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
+    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
         pass
 
 class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]):
@@ -150,5 +150,5 @@ class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateO
     ) -> None:
         self._agent.add_transitions(transition, stage)
 
-    def update(self, stage: AgentStage = AgentStage.ONLINE, batch_size : Optional[int] = None, *args, **kwargs) -> Dict[str, Any]:
-        return self._agent.update(stage, batch_size, *args, **kwargs)
+    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
+        return self._agent.update(stage, *args, **kwargs)

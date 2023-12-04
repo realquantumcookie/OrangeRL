@@ -17,58 +17,104 @@
 from typing import Union, Tuple, Any
 import gymnasium as gym
 import torch
+from tensordict import is_tensor_collection, TensorDictBase
 import numpy as np
+from orangerl import AgentStage
+from ..agent import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
 
-from ...base.agent import AgentStage
-from ..agent import NNAgentActionMapper, NNAgentState, BatchedNNOutput
-
-class NNAgentDiscreteActionMapper(NNAgentActionMapper):
-    def __init__(self, action_space: gym.Space) -> None:
-        assert isinstance(action_space, gym.spaces.Discrete), "Action space must be a Discrete"
+class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
+    def __init__(self, action_space: gym.spaces.Discrete) -> None:
+        assert isinstance(action_space, gym.spaces.Discrete), "Action space must be Discrete"
         super().__init__(action_space)
+    
+    # @property
+    # def action_space(self) -> gym.spaces.Discrete:
+    #     return self._action_space
+    
+    # @action_space.setter
+    # def action_space(self, action_space: gym.spaces.Discrete) -> None:
+    #     assert isinstance(action_space, gym.spaces.Discrete), "Action space must be Discrete"
+    #     self._action_space = action_space
+    #     action_space_mean = (action_space.high + action_space.low) / 2
+    #     action_space_span = (action_space.high - action_space.low) / 2
+    #     self._action_space_mean = torch.from_numpy(action_space_mean)
+    #     self._action_space_span = torch.from_numpy(action_space_span)
 
     def forward_distribution(
         self,
-        output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]],
+        nn_agent: NNAgent[gym.spaces.Box],
+        nn_output : NNAgentNetworkOutput,
         stage : AgentStage = AgentStage.ONLINE
     ):
-        if isinstance(output, tuple):
-            is_sequence = True
-            batch, states = output
-            assert batch.ndim > 2, "The output must be a sequence shaped (batch_size, seq_length, n_actions)"
-        else:
-            is_sequence = False
-            batch = output
-            states = None
+        assert isinstance(nn_output.output, torch.Tensor), "The output must be a tensor"
+        nn_output_tensor_flattened = nn_output.output.flatten(2) if nn_output.is_seq else nn_output.output.flatten(1)
+        assert nn_output_tensor_flattened.shape[-1] == self.action_space.n, "The last dimension of the output must match the discrete space"
         
-        batch = batch.flatten(start_dim=2) if is_sequence else batch.flatten(start_dim=1)
-        
-        assert batch.shape[-1] == self.action_space.n
-        
-        return torch.distributions.Categorical(logits=batch), states, is_sequence
+        dist = torch.distributions.Categorical(logits=nn_output_tensor_flattened)
+        return dist
 
-    """
-    Forward pass of the action mapper
-    param output: Output from the network, action shaped (batch_size, discrete_action_dimension) or (batch_size, 1, discrete_action_dimension) for sequence models
-    The state should be shaped (batch_size, (*state_shape))
-    return: The batch of actions, shaped (batch_size, (*action_shape))
-    """
-    def forward(self, output : Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]], stage : AgentStage = AgentStage.ONLINE) -> BatchedNNAgentStochasticOutput:
-        dist, states, is_sequence = self.forward_distribution(output, stage)
-        actions = dist.sample()
-        log_probs = dist.log_prob(actions)
-        return BatchedNNOutput(
-            actions = actions,
-            log_probs = log_probs,
-            states = states,
-            is_sequence = is_sequence
-        )
-    
-    def log_prob(
-        self, 
-        output: Union[torch.Tensor, Tuple[torch.Tensor, NNAgentState]],
-        action: torch.Tensor, 
+    def log_prob_distribution(
+        self,
+        nn_agent: NNAgent[gym.spaces.Box],
+        nn_output : NNAgentNetworkOutput,
+        dist: torch.distributions.TransformedDistribution,
+        action: torch.Tensor,
         stage: AgentStage = AgentStage.ONLINE
     ) -> torch.Tensor:
-        dist, _, _ = self.forward_distribution(output, stage)
-        return dist.log_prob(action)
+        log_prob : torch.Tensor = dist.log_prob(action - self.action_space.start)
+        sum_dims = log_prob.shape[2:] if nn_output.is_seq else log_prob.shape[1:]
+        log_prob = torch.sum(log_prob, dim=sum_dims)
+        return log_prob
+
+    def forward(
+        self, 
+        nn_agent: NNAgent[gym.spaces.Box],
+        nn_output : NNAgentNetworkOutput, 
+        is_update : bool = False,
+        stage : AgentStage = AgentStage.ONLINE
+    ) -> BatchedNNAgentOutput:
+        
+        dist = self.forward_distribution(
+            nn_agent, 
+            nn_output, 
+            stage
+        )
+
+        actions = dist.sample()
+        actions += self.action_space.start
+        log_probs = self.log_prob_distribution(
+            nn_agent,
+            nn_output,
+            dist,
+            actions,
+            stage
+        )
+        
+        return BatchedNNAgentOutput(
+            actions = actions,
+            log_probs = log_probs,
+            final_states = nn_output.state,
+            masks=nn_output.masks,
+            is_seq=nn_output.is_seq
+        )
+
+    def log_prob(
+        self, 
+        nn_agent: NNAgent[gym.spaces.Box],
+        nn_output: NNAgentNetworkOutput,
+        actions: torch.Tensor, 
+        is_update : bool = False,
+        stage: AgentStage = AgentStage.ONLINE
+    ) -> torch.Tensor:
+        dist = self.forward_distribution(
+            nn_agent, 
+            nn_output, 
+            stage
+        )
+        return self.log_prob_distribution(
+            nn_agent,
+            nn_output,
+            dist,
+            actions,
+            stage
+        )

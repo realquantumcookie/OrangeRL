@@ -14,7 +14,7 @@
    limitations under the License.
 """
 
-from orangerl.base.data import TransitionBatch, EnvironmentStep, TransitionSequence
+from orangerl import TransitionBatch, EnvironmentStep, TransitionSequence
 from tensordict import tensorclass, TensorDictBase, TensorDict, is_tensor_collection
 import torch
 from typing import Iterator, Optional, Iterable, Union, MutableSequence, Dict, Any, Sequence
@@ -61,66 +61,63 @@ class NNBatch(TransitionSequence[torch.Tensor, torch.Tensor]):
     truncations: torch.Tensor
     masks: Optional[torch.Tensor]
     infos: Optional[TensorDict]
-    is_transition_single_episode : bool = False
-    is_transition_time_sorted : bool = False
     
     @property
     def transition_len(self) -> int:
-        assert self.batch_dims >= 1 and self.batch_dims <= 2
         if self.masks is None:
             return int(torch.prod(self.batch_size).item())
         else:
             return torch.count_nonzero(self.masks).to(torch.int).item()
 
     def iter_transitions(self) -> Iterator[EnvironmentStep[torch.Tensor, torch.Tensor]]:
-        assert self.batch_dims >= 1 and self.batch_dims <= 2
         flattened_self : NNBatch = self.flatten()
-        for i in range(flattened_self.batch_size[0]):
+        flattened_masked_self : NNBatch = flattened_self if flattened_self.masks is None else flattened_self[flattened_self.masks.to(torch.bool)]
+        for i in range(flattened_masked_self.batch_size[0]):
             yield EnvironmentStep(
-                flattened_self.observations[i],
-                flattened_self.actions[i],
-                flattened_self.next_observations[i],
-                flattened_self.rewards[i].item(),
-                flattened_self.terminations[i] > 0,
-                flattened_self.truncations[i] > 0,
-                flattened_self.infos[i] if flattened_self.infos is not None else None,
+                flattened_masked_self.observations[i],
+                flattened_masked_self.actions[i],
+                flattened_masked_self.next_observations[i],
+                flattened_masked_self.rewards[i].item(),
+                flattened_masked_self.terminations[i] > 0,
+                flattened_masked_self.truncations[i] > 0,
+                flattened_masked_self.infos[i] if flattened_masked_self.infos is not None else None,
             )
     
     def transitions_at(self, index: Union[int, slice, Sequence[int]]) -> Union[EnvironmentStep[torch.Tensor, torch.Tensor], Sequence[EnvironmentStep[torch.Tensor, torch.Tensor]]]:
-        assert self.batch_dims >= 1 and self.batch_dims <= 2
         flattened_self : NNBatch = self.flatten()
+        flattened_masked_self : NNBatch = flattened_self if flattened_self.masks is None else flattened_self[flattened_self.masks.to(torch.bool)]
         if isinstance(index, int):
             return EnvironmentStep(
-                flattened_self.observations[index],
-                flattened_self.actions[index],
-                flattened_self.next_observations[index],
-                flattened_self.rewards[index].item(),
-                flattened_self.terminations[index] > 0,
-                flattened_self.truncations[index] > 0,
-                flattened_self.infos[index] if flattened_self.infos is not None else None,
+                flattened_masked_self.observations[index],
+                flattened_masked_self.actions[index],
+                flattened_masked_self.next_observations[index],
+                flattened_masked_self.rewards[index].item(),
+                flattened_masked_self.terminations[index] > 0,
+                flattened_masked_self.truncations[index] > 0,
+                flattened_masked_self.infos[index] if flattened_masked_self.infos is not None else None,
             )
         elif isinstance(index, slice):
             return [
                 EnvironmentStep(
-                    flattened_self.observations[i],
-                    flattened_self.actions[i],
-                    flattened_self.next_observations[i],
-                    flattened_self.rewards[i].item(),
-                    flattened_self.terminations[i] > 0,
-                    flattened_self.truncations[i] > 0,
-                    flattened_self.infos[i] if flattened_self.infos is not None else None,
-                ) for i in range(*index.indices(flattened_self.batch_size[0]))
+                    flattened_masked_self.observations[i],
+                    flattened_masked_self.actions[i],
+                    flattened_masked_self.next_observations[i],
+                    flattened_masked_self.rewards[i].item(),
+                    flattened_masked_self.terminations[i] > 0,
+                    flattened_masked_self.truncations[i] > 0,
+                    flattened_masked_self.infos[i] if flattened_masked_self.infos is not None else None,
+                ) for i in range(*index.indices(flattened_masked_self.batch_size[0]))
             ]
         else:  # Sequence[int]
             return [
                 EnvironmentStep(
-                    flattened_self.observations[i],
-                    flattened_self.actions[i],
-                    flattened_self.next_observations[i],
-                    flattened_self.rewards[i].item(),
-                    flattened_self.terminations[i] > 0,
-                    flattened_self.truncations[i] > 0,
-                    flattened_self.infos[i] if flattened_self.infos is not None else None,
+                    flattened_masked_self.observations[i],
+                    flattened_masked_self.actions[i],
+                    flattened_masked_self.next_observations[i],
+                    flattened_masked_self.rewards[i].item(),
+                    flattened_masked_self.terminations[i] > 0,
+                    flattened_masked_self.truncations[i] > 0,
+                    flattened_masked_self.infos[i] if flattened_masked_self.infos is not None else None,
                 ) for i in index
             ]
 
@@ -148,8 +145,6 @@ def info_dict_to_tensor_dict(info_dict : Dict[str, Any]) -> TensorDictBase:
 
 def nnbatch_from_transitions(
     transitions : Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]],
-    is_transition_single_episode : bool,
-    is_transition_time_sorted : bool,
     save_info : bool = False
 ) -> NNBatch:
     if isinstance(transitions, NNBatch):
@@ -173,8 +168,6 @@ def nnbatch_from_transitions(
         truncations=torch.tensor([step.truncated for step in transitions], dtype=torch.bool),
         masks=None,
         infos=transformed_infos,
-        is_transition_single_episode=is_transition_single_episode,
-        is_transition_time_sorted=is_transition_time_sorted,
         batch_size=(len(transitions),)
     )
     return ret_data
