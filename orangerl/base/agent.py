@@ -24,8 +24,9 @@ from dataclasses import dataclass
 class AgentStage(Enum):
     EXPLORE = 1
     ONLINE = 2
-    OFFLINE = 3
-    EVAL = 4
+    OFFPOLICY = 3
+    OFFLINE = 4
+    EVAL = 5
 
 class AgentActionType(Enum):
     DISCRETE = 1

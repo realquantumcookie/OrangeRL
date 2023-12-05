@@ -56,7 +56,7 @@ class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
                     self.final_states[i] if self.final_states is not None else None
                 )
 
-@tensorclass
+@dataclass
 class NNAgentNetworkOutput:
     """
     NNAgentNetworkOutput is a dataclass that represents the output of a neural network.
@@ -64,6 +64,20 @@ class NNAgentNetworkOutput:
     output : Tensor_Or_TensorDict # (batch_size, *action_shape) if not is_seq, (batch_size, sequence_length, *action_shape) if is_seq
     masks: Optional[torch.Tensor] = None # (batch_size, ) if not is_seq, (batch_size, sequence_length) if is_seq
     state : Optional[Tensor_Or_TensorDict] = None # (batch_size, *state_shape) if is_seq
+    is_seq : bool = False
+
+@dataclass
+class NNAgentCriticEstimateOutput:
+    output : Union[torch.Tensor, torch.distributions.Distribution]
+    masks: Optional[torch.Tensor] = None
+    state : Optional[Tensor_Or_TensorDict] = None
+    is_seq : bool = False
+
+@dataclass
+class NNAgentDynamicsEstimateOutput:
+    output: Union[torch.Tensor, torch.distributions.Distribution]
+    masks: Optional[torch.Tensor] = None
+    state : Optional[Tensor_Or_TensorDict] = None
     is_seq : bool = False
 
 _ActionSpaceMapperT = TypeVar("_ActionSpaceMapperT", bound=gym.Space)
@@ -255,3 +269,29 @@ class NNAgent(Agent[
             stage = stage,
             is_update=False
         )
+
+class NNAgentWithCritic:
+    @abstractmethod
+    def evaluate_critic(
+        self,
+        obs_batch: torch.Tensor,
+        masks: Optional[torch.Tensor] = None,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
+        stage: AgentStage = AgentStage.ONLINE,
+        **kwargs: Any,
+    ) -> NNAgentCriticEstimateOutput:
+        pass
+
+class NNAgentWithDynamics:
+    @abstractmethod
+    def predict_dynamics(
+        self,
+        obs_batch: torch.Tensor,
+        action_batch: torch.Tensor,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
+        stage: AgentStage = AgentStage.ONLINE,
+        **kwargs: Any,
+    ) -> NNAgentDynamicsEstimateOutput:
+        pass

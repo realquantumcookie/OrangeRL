@@ -52,12 +52,12 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
         if isinstance(nn_output.output, torch.Tensor):
             assert nn_output.output.shape[-1] == 2, "The last dimension of the output must be 2"
             means_output = nn_output.output[...,0]
-            stds_output = nn_output.output[...,1]
+            log_stds_output = nn_output.output[...,1]
         else:
             output_keys = nn_output.output.keys()
-            assert 'loc' in output_keys and 'scale' in output_keys, "The output must have keys 'loc' and 'scale'"
+            assert 'loc' in output_keys and 'log_scale' in output_keys, "The output must have keys 'loc' and 'log_scale'"
             means_output = nn_output.output['loc']
-            stds_output = nn_output.output['scale']
+            log_stds_output = nn_output.output['log_scale']
         
         action_space_mean = self._action_space_mean.to(means_output.device)
         action_space_span = self._action_space_span.to(means_output.device)
@@ -70,7 +70,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
             torch.distributions.transforms.TanhTransform(),
             torch.distributions.transforms.AffineTransform(loc = action_space_mean, scale = action_space_span)
         ]
-        dist = torch.distributions.Normal(means_output, stds_output)
+        dist = torch.distributions.Normal(means_output, torch.exp(log_stds_output))
         transformed_dist = torch.distributions.TransformedDistribution(dist, transforms)
         return dist, transformed_dist
 
