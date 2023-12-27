@@ -10,8 +10,9 @@ import threading
 import numpy as np
 from .data import Tensor_Or_Numpy
 from asyncio import Future
+from os import PathLike
 
-def pin_memory(output: Union[TensorDictBase, torch.Tensor]) -> NNBatch:
+def pin_memory(output: Union[TensorDictBase, torch.Tensor]) -> Union[TensorDictBase, torch.Tensor]:
     if output.device == torch.device("cpu"):
         return output.pin_memory()
     else:
@@ -245,7 +246,10 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
     @pin_memory_output
     def _sample(self, **kwargs) -> NNBatch:
         with self._replay_lock:
-            index, mask = self._sampler.sample_idx(self, self.sample_batch_size, self.sample_repeat, **kwargs)
+            sample_out = self._sampler.sample_idx(self, self.sample_batch_size, self.sample_repeat, **kwargs)
+            if sample_out is None:
+                return None
+            index, mask = sample_out
             mask = torch.from_numpy(mask) if mask is not None else None
             index = torch.from_numpy(index)
             data : NNBatch = self._storage[index]
@@ -253,6 +257,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         
         for transform in self.sample_transforms:
             data = transform.transform_batch(data)
+        
         return data
 
     def clear(self):
@@ -266,6 +271,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
 
     def sample(
         self,
+        device : Optional[Union[torch.device, str]] = None,
         **kwargs,
     ) -> NNBatch:
         """Samples a batch of data from the replay buffer.
@@ -284,19 +290,21 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
             A tuple containing this batch and info if return_info flag is set to True.
         """
         if self._prefetch_num is None:
-            ret = self._sample(**kwargs)
+            ret = self._sample(device, **kwargs)
         else:
             if len(self._prefetch_queue) == 0:
-                ret = self._sample(**kwargs)
+                ret = self._sample(device, **kwargs)
             else:
                 with self._futures_lock:
                     ret = self._prefetch_queue.popleft().result()
-
-            with self._futures_lock:
-                while len(self._prefetch_queue) < self._prefetch_num:
-                    fut = self._prefetch_executor.submit(self._sample, **kwargs)
-                    self._prefetch_queue.append(fut)
+            
+            if len(self) > 0:
+                with self._futures_lock:
+                    while len(self._prefetch_queue) < self._prefetch_num:
+                        fut = self._prefetch_executor.submit(self._sample, **kwargs)
+                        self._prefetch_queue.append(fut)
         
+        ret = ret.to(device=device) if device is not None else ret
         return ret
 
     def mark_update(self, index: Union[int, torch.Tensor]) -> None:
@@ -327,4 +335,17 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
             state["_futures_lock"] = _futures_lock
         self.__dict__.update(state)
 
-
+    def save(self, path : Union[str, PathLike]) -> None:
+        torch.save(
+            self.state_dict(),
+            path
+        )
+    
+    def load(self, path: Union[str, PathLike]) -> None:
+        target_device = self._storage.device if hasattr(self._storage, "device") else torch.device("cpu")
+        self.load_state_dict(
+            torch.load(
+                path,
+                map_location=target_device
+            )
+        )

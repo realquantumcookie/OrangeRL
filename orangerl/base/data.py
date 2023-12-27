@@ -16,6 +16,8 @@
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Union, TypeVar, Generic, List, SupportsFloat, MutableSequence, Sequence
 from abc import abstractmethod, ABC
 import numpy as np
+from .common import Savable
+from os import PathLike
 
 _ObsST = TypeVar("_ObsST")
 _ActST = TypeVar("_ActST")
@@ -201,7 +203,7 @@ class TransitionSampler(Generic[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST
         batch_size : int,
         repeat_sample = True,
         **kwargs
-    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    ) -> Optional[Tuple[np.ndarray, Optional[np.ndarray]]]:
         """
         Sample indices from the transition batch
         Output:
@@ -213,7 +215,7 @@ class TransitionSampler(Generic[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST
         pass
 
 _SampleOutputT = TypeVar("_SampleOutputT")
-class TransitionReplayBuffer(TransitionSequence[_ObsST, _ActST], MutableSequence[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST, _SampleOutputT], ABC):
+class TransitionReplayBuffer(Savable, TransitionSequence[_ObsST, _ActST], MutableSequence[EnvironmentStep[_ObsST, _ActST]], Generic[_ObsST, _ActST, _SampleOutputT], ABC):
     transition_len : int
     capacity : Optional[int] = None
     sampler: TransitionSampler[_ObsST, _ActST]
@@ -281,8 +283,16 @@ class TransitionReplayBuffer(TransitionSequence[_ObsST, _ActST], MutableSequence
         return self
 
     @abstractmethod
+    def save(self, path: Union[str, PathLike]) -> None:
+        pass
+
+    @abstractmethod
+    def load(self, path: Union[str, PathLike]) -> None:
+        pass
+
+    @abstractmethod
     def sample(
         self,
         **kwargs
-    ) -> _SampleOutputT:
+    ) -> Optional[_SampleOutputT]:
         pass

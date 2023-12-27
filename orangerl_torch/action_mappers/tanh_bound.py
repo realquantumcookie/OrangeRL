@@ -45,7 +45,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def forward_distribution(
         self,
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput,
         stage : AgentStage = AgentStage.ONLINE
     ):
@@ -59,6 +59,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
             means_output = nn_output.output['loc']
             log_stds_output = nn_output.output['log_scale']
         
+        
         action_space_mean = self._action_space_mean.to(means_output.device)
         action_space_span = self._action_space_span.to(means_output.device)
         action_space_mean = action_space_mean.unsqueeze(0)
@@ -66,6 +67,12 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
         if nn_output.is_seq:
             action_space_mean = action_space_mean.unsqueeze(1)
             action_space_span = action_space_span.unsqueeze(1)
+            means_output = means_output.reshape(means_output.shape[0], means_output.shape[1], -1)
+            log_stds_output = log_stds_output.reshape(log_stds_output.shape[0], log_stds_output.shape[1], -1)
+        else:
+            means_output = means_output.reshape(means_output.shape[0], -1)
+            log_stds_output = log_stds_output.reshape(log_stds_output.shape[0], -1)
+        
         transforms = [
             torch.distributions.transforms.TanhTransform(),
             torch.distributions.transforms.AffineTransform(loc = action_space_mean, scale = action_space_span)
@@ -76,13 +83,18 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     @staticmethod
     def log_prob_distribution(
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput,
         base_dist: torch.distributions.Normal,
         dist: torch.distributions.TransformedDistribution,
         action: torch.Tensor,
         stage: AgentStage = AgentStage.ONLINE
     ) -> torch.Tensor:
+        if nn_output.is_seq:
+            action = action.reshape(action.shape[0], action.shape[1], -1)
+        else:
+            action = action.reshape(action.shape[0], -1)
+        
         log_prob : torch.Tensor = dist.log_prob(action)
         sum_dims = log_prob.shape[2:] if nn_output.is_seq else log_prob.shape[1:]
         log_prob = torch.sum(log_prob, dim=sum_dims)
@@ -90,7 +102,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def forward(
         self, 
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput, 
         is_update : bool = False,
         stage : AgentStage = AgentStage.ONLINE
@@ -103,7 +115,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
         )
 
         if stage != AgentStage.EVAL:
-            actions = dist.rsample()
+            actions : torch.Tensor = dist.rsample()
             log_probs = __class__.log_prob_distribution(
                 nn_agent,
                 nn_output,
@@ -113,11 +125,16 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
                 stage
             )
         else:
-            actions = base_dist.mean
+            actions : torch.Tensor = base_dist.mean
             for transform in dist.transforms:
                 actions = transform(actions)
             log_probs = torch.zeros(actions.shape[:2] if nn_output.is_seq else actions.shape[:1], dtype=actions.dtype, device=actions.device)
 
+        if nn_output.is_seq:
+            actions = actions.reshape(actions.shape[0], actions.shape[1], *self._action_space_mean.shape)
+        else:
+            actions = actions.reshape(actions.shape[0], *self._action_space_mean.shape)
+        
         return BatchedNNAgentOutput(
             actions = actions,
             log_probs = log_probs,
@@ -128,7 +145,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def log_prob(
         self, 
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output: NNAgentNetworkOutput,
         actions: torch.Tensor, 
         is_update : bool = False,

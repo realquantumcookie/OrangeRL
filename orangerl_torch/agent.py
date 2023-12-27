@@ -33,13 +33,16 @@ class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
     actions : torch.Tensor # (batch_size, *action_shape) if not is_seq, (batch_size, sequence_length, *action_shape) if is_seq
     log_probs : torch.Tensor # (batch_size, ) if not is_seq, (batch_size, sequence_length) if is_seq
     final_states: Optional[Tensor_Or_TensorDict] = None # (batch_size, *state_shape) if is_seq
-    masks: Optional[torch.Tensor] = None # (batch_size, ) if not is_seq, (batch_size, sequence_length) if is_seq
+    masks: Optional[torch.Tensor] = None # None if not is_seq, (batch_size, sequence_length) if is_seq
     is_seq : bool = False
 
     def __iter__(self) -> Iterator[NNAgentOutput]:
         if self.is_seq:
             for i in range(self.actions.size(0)):
                 i_seq_len = self.actions.size(1) if self.masks is None else int(torch.count_nonzero(self.masks[i]).item())
+                if self.masks is not None:
+                    assert self.masks[i, :i_seq_len].all(), "masks must be all True for the first i_seq_len elements"
+                
                 for j in range(i_seq_len):
                     yield NNAgentOutput(
                         self.actions[i, j],
@@ -47,75 +50,17 @@ class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
                         self.final_states[i] if self.final_states is not None and j == i_seq_len - 1 else None
                     )
         else:
+            assert self.masks is None, "masks must be None if is_seq is False"
             for i in range(self.actions.size(0)):
-                if self.masks is not None and self.masks[i] == 0:
-                    continue
+                # if self.masks is not None and self.masks[i] == 0:
+                #     continue
                 yield NNAgentOutput(
                     self.actions[i],
                     self.log_probs[i],
                     self.final_states[i] if self.final_states is not None else None
                 )
 
-@dataclass
-class NNAgentNetworkOutput:
-    """
-    NNAgentNetworkOutput is a dataclass that represents the output of a neural network.
-    """
-    output : Tensor_Or_TensorDict # (batch_size, *action_shape) if not is_seq, (batch_size, sequence_length, *action_shape) if is_seq
-    masks: Optional[torch.Tensor] = None # (batch_size, ) if not is_seq, (batch_size, sequence_length) if is_seq
-    state : Optional[Tensor_Or_TensorDict] = None # (batch_size, *state_shape) if is_seq
-    is_seq : bool = False
-
-@dataclass
-class NNAgentCriticEstimateOutput:
-    output : Union[torch.Tensor, torch.distributions.Distribution]
-    masks: Optional[torch.Tensor] = None
-    state : Optional[Tensor_Or_TensorDict] = None
-    is_seq : bool = False
-
-@dataclass
-class NNAgentDynamicsEstimateOutput:
-    output: Union[torch.Tensor, torch.distributions.Distribution]
-    masks: Optional[torch.Tensor] = None
-    state : Optional[Tensor_Or_TensorDict] = None
-    is_seq : bool = False
-
-_ActionSpaceMapperT = TypeVar("_ActionSpaceMapperT", bound=gym.Space)
-class NNAgentActionMapper(ABC, nn.Module, Generic[_ActionSpaceMapperT]):
-    """
-    NNAgentActionMapper is a module that maps the output of a neural network to an action.
-    """
-    action_type : AgentActionType
-
-    def __init__(self, action_space : _ActionSpaceMapperT) -> None:
-        super().__init__()
-        self.action_space = action_space
-    
-    @abstractmethod
-    def forward(
-        self, 
-        nn_agent: "NNAgent[_ActionSpaceMapperT]",
-        nn_output : NNAgentNetworkOutput, 
-        is_update : bool = False,
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> BatchedNNAgentOutput:
-        """
-        Should return a BatchedNNAgentOutput object, which represents the actions taken by the agent.
-        """
-
-        pass
-
-    @abstractmethod
-    def log_prob(
-        self,
-        nn_agent: "NNAgent[gym.spaces.Box]",
-        nn_output : NNAgentNetworkOutput,
-        actions : torch.Tensor,
-        is_update : bool = False,
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> BatchedNNAgentOutput:
-        pass
-
+_ObservationSpaceT = TypeVar("_ObservationSpaceT", bound=gym.Space)
 class NNAgent(Agent[
     Tensor_Or_Numpy,
     Tensor_Or_Numpy,
@@ -123,22 +68,25 @@ class NNAgent(Agent[
     Tensor_Or_TensorDict,
     Tensor_Or_TensorDict, 
     torch.Tensor
-], Generic[_ActionSpaceMapperT], nn.Module, ABC):
+], Generic[_ObservationSpaceT], nn.Module, ABC):
     """
     NNAgent is an agent that uses a neural network (written in PyTorch) to map observations to actions.
     """
-    action_mapper : NNAgentActionMapper[_ActionSpaceMapperT]
-    np_random : Optional[np.random.Generator] = None
-    obs_shape : torch.Size
+    observation_space : _ObservationSpaceT
+    action_space : _ActionSpaceMapperT
+    has_replay_buffer : bool
 
     def __init__(
         self, 
         is_sequence_model : bool,
-        empty_state_vector : Tensor_Or_TensorDict
+        empty_state_vector : Optional[Tensor_Or_TensorDict],
+        decay_factor : float = 0.99,
     ) -> None:
         super().__init__()
+        assert empty_state_vector is not None or not is_sequence_model, "empty_state_vector must be provided for sequence models"
         self._empty_state_vector = empty_state_vector
         self._is_sequence_model = is_sequence_model
+        self.decay_factor = decay_factor
 
     @property
     def unwrapped(self) -> "NNAgent":
@@ -157,7 +105,7 @@ class NNAgent(Agent[
     @property
     def action_type(self) -> AgentActionType:
         return self.action_mapper.action_type
-    
+
     @property
     def is_sequence_model(self) -> bool:
         return self._is_sequence_model
@@ -188,7 +136,7 @@ class NNAgent(Agent[
         """
         pass
 
-    def add_transitions(
+    def observe_transitions(
         self, 
         transition : Union[Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]],
         stage : AgentStage = AgentStage.ONLINE
@@ -269,29 +217,3 @@ class NNAgent(Agent[
             stage = stage,
             is_update=False
         )
-
-class NNAgentWithCritic:
-    @abstractmethod
-    def evaluate_critic(
-        self,
-        obs_batch: torch.Tensor,
-        masks: Optional[torch.Tensor] = None,
-        state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
-        **kwargs: Any,
-    ) -> NNAgentCriticEstimateOutput:
-        pass
-
-class NNAgentWithDynamics:
-    @abstractmethod
-    def predict_dynamics(
-        self,
-        obs_batch: torch.Tensor,
-        action_batch: torch.Tensor,
-        state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
-        **kwargs: Any,
-    ) -> NNAgentDynamicsEstimateOutput:
-        pass

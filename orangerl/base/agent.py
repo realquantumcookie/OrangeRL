@@ -15,11 +15,13 @@
 """
 
 from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable, List, SupportsFloat
+from .common import Savable
 from .data import TransitionBatch, EnvironmentStep
 from abc import ABC, abstractmethod, abstractproperty
 from enum import Enum
 import numpy as np
 from dataclasses import dataclass
+from os import PathLike
 
 class AgentStage(Enum):
     EXPLORE = 1
@@ -44,7 +46,7 @@ class AgentOutput(Generic[_ActOutputT, _StateOutputT, _LogProbOutputT]):
 _ObsT = TypeVar("_ObsT")
 _ActInputT = TypeVar("_ActInputT")
 _StateInputT = TypeVar("_StateInputT")
-class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], ABC):
+class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], Savable, ABC):
     is_sequence_model : bool
     action_type: AgentActionType
 
@@ -81,11 +83,19 @@ class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT,
         pass
 
     @abstractmethod
-    def add_transitions(
+    def observe_transitions(
         self, 
         transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
         stage : AgentStage = AgentStage.ONLINE
     ) -> None:
+        pass
+
+    @abstractmethod
+    def save(self, path : Union[str, PathLike]) -> None:
+        pass
+
+    @abstractmethod
+    def load(self, path : Union[str, PathLike]) -> None:
         pass
 
     @abstractmethod
@@ -144,12 +154,18 @@ class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateO
     ) -> Iterable[AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]]:
         return self._agent.get_action_batch(observations, states, stage)
 
-    def add_transitions(
+    def observe_transitions(
         self, 
         transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
         stage : AgentStage = AgentStage.ONLINE
     ) -> None:
-        self._agent.add_transitions(transition, stage)
+        self._agent.observe_transitions(transition, stage)
+
+    def save(self, path : Union[str, PathLike]) -> None:
+        self._agent.save(path)
+
+    def load(self, path : Union[str, PathLike]) -> None:
+        self._agent.load(path)
 
     def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
         return self._agent.update(stage, *args, **kwargs)

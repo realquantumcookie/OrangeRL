@@ -42,7 +42,7 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def forward_distribution(
         self,
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput,
         stage : AgentStage = AgentStage.ONLINE
     ):
@@ -55,7 +55,7 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def log_prob_distribution(
         self,
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput,
         dist: torch.distributions.TransformedDistribution,
         action: torch.Tensor,
@@ -68,7 +68,7 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def forward(
         self, 
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput, 
         is_update : bool = False,
         stage : AgentStage = AgentStage.ONLINE
@@ -100,7 +100,7 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def log_prob(
         self, 
-        nn_agent: NNAgent[gym.spaces.Box],
+        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output: NNAgentNetworkOutput,
         actions: torch.Tensor, 
         is_update : bool = False,
