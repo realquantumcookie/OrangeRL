@@ -14,8 +14,9 @@
    limitations under the License.
 """
 
-from orangerl import Agent, AgentOutput, AgentStage, AgentActionType, TransitionBatch, EnvironmentStep
+from orangerl import Agent, AgentOutput, AgentStage, TransitionBatch, EnvironmentStep
 from .data import NNBatch, Tensor_Or_Numpy, transform_any_array_to_numpy, transform_any_array_to_torch
+from .replay_buffer import NNReplayBuffer
 from abc import abstractmethod, ABC
 import numpy as np
 import torch
@@ -24,13 +25,14 @@ from tensordict import TensorDictBase, tensorclass, TensorDict
 from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable
 from dataclasses import dataclass
 import gymnasium as gym
+from os import PathLike
 
 Tensor_Or_TensorDict = Union[torch.Tensor, TensorDict]
 NNAgentOutput = AgentOutput[Tensor_Or_TensorDict, Tensor_Or_TensorDict, torch.Tensor]
 
 @dataclass
 class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
-    actions : torch.Tensor # (batch_size, *action_shape) if not is_seq, (batch_size, sequence_length, *action_shape) if is_seq
+    actions : Tensor_Or_TensorDict # (batch_size, *action_shape) if not is_seq, (batch_size, sequence_length, *action_shape) if is_seq
     log_probs : torch.Tensor # (batch_size, ) if not is_seq, (batch_size, sequence_length) if is_seq
     final_states: Optional[Tensor_Or_TensorDict] = None # (batch_size, *state_shape) if is_seq
     masks: Optional[torch.Tensor] = None # None if not is_seq, (batch_size, sequence_length) if is_seq
@@ -60,33 +62,43 @@ class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
                     self.final_states[i] if self.final_states is not None else None
                 )
 
-_ObservationSpaceT = TypeVar("_ObservationSpaceT", bound=gym.Space)
 class NNAgent(Agent[
-    Tensor_Or_Numpy,
-    Tensor_Or_Numpy,
-    torch.Tensor,
     Tensor_Or_TensorDict,
-    Tensor_Or_TensorDict, 
+    Tensor_Or_TensorDict,
+    Tensor_Or_TensorDict,
     torch.Tensor
-], Generic[_ObservationSpaceT], nn.Module, ABC):
+], nn.Module, ABC):
     """
     NNAgent is an agent that uses a neural network (written in PyTorch) to map observations to actions.
     """
-    observation_space : _ObservationSpaceT
-    action_space : _ActionSpaceMapperT
-    has_replay_buffer : bool
 
     def __init__(
         self, 
         is_sequence_model : bool,
-        empty_state_vector : Optional[Tensor_Or_TensorDict],
+        empty_state : Optional[Tensor_Or_TensorDict],
+        init_stage : AgentStage = AgentStage.ONLINE,
         decay_factor : float = 0.99,
     ) -> None:
         super().__init__()
-        assert empty_state_vector is not None or not is_sequence_model, "empty_state_vector must be provided for sequence models"
-        self._empty_state_vector = empty_state_vector
+        assert empty_state is not None or not is_sequence_model, "empty_state must be provided for sequence models"
+        assert decay_factor >= 0.0 and decay_factor < 1.0, "decay_factor must be in [0.0, 1.0)"
+        self.empty_state = empty_state
         self._is_sequence_model = is_sequence_model
         self.decay_factor = decay_factor
+        self._current_stage = init_stage
+
+    @property
+    def current_stage(self) -> AgentStage:
+        return self._current_stage
+    
+    @current_stage.setter
+    def current_stage(self, stage : AgentStage) -> None:
+        if stage == AgentStage.EVAL:
+            self.train(False)
+        else:
+            self.train(True)
+        
+        self._current_stage = stage
 
     @property
     def unwrapped(self) -> "NNAgent":
@@ -103,27 +115,23 @@ class NNAgent(Agent[
         pass
 
     @property
-    def action_type(self) -> AgentActionType:
-        return self.action_mapper.action_type
+    def replay_buffer(self) -> Optional[NNReplayBuffer]:
+        return None
 
     @property
     def is_sequence_model(self) -> bool:
         return self._is_sequence_model
 
-    @property
-    def empty_state_vector(self) -> Tensor_Or_TensorDict:
-        return self._empty_state_vector
-
     @abstractmethod
     def forward(
         self,
-        obs_batch: torch.Tensor,
+        obs_batch: Tensor_Or_TensorDict,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
         is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
+        is_update = False,
         **kwargs: Any,
-    ) -> NNAgentNetworkOutput:
+    ) -> BatchedNNAgentOutput:
         """
         Forward pass of the agent. 
         @param obs_batch: batch of observations, 
@@ -131,28 +139,26 @@ class NNAgent(Agent[
         @param state: state of the agent. 
             For sequence models, this is (B, *state_shape) for the initial state of each sequence. 
         @param is_seq: whether the input is a sequence (B, S, *obs_shape) of observations.
-        @param stage: stage (Exploration, Online, Offline, Eval) of the agent. 
-        @returns: NNAgentNetworkOutput object
+        @returns: BatchedNNAgentOutput object
         """
-        pass
-
-    def observe_transitions(
-        self, 
-        transition : Union[Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]],
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> None:
-        pass
+        ...
 
     @abstractmethod
-    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
-        pass
+    def observe_transitions(
+        self, 
+        transition : Union[Iterable[EnvironmentStep[Tensor_Or_TensorDict, Tensor_Or_TensorDict]], EnvironmentStep[Tensor_Or_TensorDict, Tensor_Or_TensorDict]]
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def update(self, *args, **kwargs) -> Dict[str, Any]:
+        ...
 
     @torch.jit.ignore
     def get_action_batch(
         self, 
-        observations : Union[Tensor_Or_Numpy, Iterable[Tensor_Or_Numpy]], 
-        states : Optional[Iterable[Optional[Union[np.ndarray, torch.Tensor, TensorDictBase]]]] = None, 
-        stage : AgentStage = AgentStage.ONLINE,
+        observations : Union[Tensor_Or_TensorDict, Iterable[Tensor_Or_TensorDict]], 
+        states : Optional[Iterable[Optional[Tensor_Or_TensorDict]]] = None, 
         device : Optional[Union[torch.device, str, int]] = None,
         dtype : Optional[torch.dtype] = None
     ) -> BatchedNNAgentOutput:
@@ -165,7 +171,6 @@ class NNAgent(Agent[
             If you want to input a sequence of observations, use forward() instead.
         @param states: state of the agent.
             For sequence models, this is (batch_size[0], *state_shape) for the initial state of each sequence.
-        @param stage: stage (Exploration, Online, Offline, Eval) of the agent.
         @param device: device to put the observations and states on.
         @param dtype: dtype to put the observations and states on.
         @returns: BatchedNNAgentOutput object
@@ -173,8 +178,11 @@ class NNAgent(Agent[
         if device is None:
             device = next(self.parameters()).device
         
-        input_obs = transform_any_array_to_torch(observations)
-        assert input_obs.size()[1:] == self.obs_shape, "Input observation shape does not match the agent's observation shape"
+        if isinstance(observations, (torch.Tensor, TensorDict)):
+            input_obs = observations
+        else:
+            input_obs = torch.stack([transform_any_array_to_torch(obs) for obs in observations], dim=0)
+        
         if self.is_sequence_model:
             input_obs = input_obs.unsqueeze(1)
         input_obs.to(device, dtype=dtype, non_blocking=True)
@@ -184,36 +192,33 @@ class NNAgent(Agent[
         else:
             if isinstance(states, (torch.Tensor, TensorDict)):
                 input_state = states
-            elif isinstance(states, np.ndarray):
-                input_state = transform_any_array_to_torch(states)
             else:
-                assert isinstance(states, Iterable), "States must be an iterable of tensors or a single tensor"
                 to_stack_state_list = []
 
                 for s in states:
                     if s is None:
-                        to_stack_state_list.append(self.empty_state_vector.to(
+                        to_stack_state_list.append(self.empty_state.to(
                             device, dtype=dtype, non_blocking=True
                         ))
                     else:
-                        assert isinstance(s, (torch.Tensor, TensorDict, np.ndarray)), "States must be an iterable of tensors or a single tensor"
-                        
-                        to_append = None
-                        if isinstance(s, np.ndarray):
-                            to_append = transform_any_array_to_torch(s)
-                        else:
-                            to_append = s
-                        to_stack_state_list.append(to_append.to(
+                        assert isinstance(s, (torch.Tensor, TensorDict))
+                        to_stack_state_list.append(s.to(
                             device, dtype=dtype, non_blocking=True
                         ))
                 input_state = torch.stack(to_stack_state_list, dim=0)
             
-            assert input_state.size()[1:] == self.empty_state_vector.size(), "Input state shape does not match the agent's state shape"
-            input_state.to(device, dtype=dtype)
+            input_state = input_state.to(device, dtype=dtype)
         
-        output = self.forward(input_obs, state = input_state, is_seq=self.is_sequence_model, stage = stage)
-        return self.action_mapper.forward(
-            output,
-            stage = stage,
-            is_update=False
+        output = self.forward(input_obs, state = input_state, is_seq=self.is_sequence_model)
+        return output
+
+    def save(self, path : Union[str, PathLike]) -> None:
+        torch.save(
+            self.state_dict(),
+            path
+        )
+
+    def load(self, path : Union[str, PathLike]) -> None:
+        self.load_state_dict(
+            torch.load(path)
         )

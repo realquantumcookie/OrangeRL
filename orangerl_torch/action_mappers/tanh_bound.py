@@ -45,7 +45,6 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def forward_distribution(
         self,
-        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput,
         stage : AgentStage = AgentStage.ONLINE
     ):
@@ -83,7 +82,6 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     @staticmethod
     def log_prob_distribution(
-        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput,
         base_dist: torch.distributions.Normal,
         dist: torch.distributions.TransformedDistribution,
@@ -102,14 +100,12 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def forward(
         self, 
-        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output : NNAgentNetworkOutput, 
         is_update : bool = False,
         stage : AgentStage = AgentStage.ONLINE
     ) -> BatchedNNAgentOutput:
         
         base_dist, dist = self.forward_distribution(
-            nn_agent, 
             nn_output, 
             stage
         )
@@ -117,7 +113,6 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
         if stage != AgentStage.EVAL:
             actions : torch.Tensor = dist.rsample()
             log_probs = __class__.log_prob_distribution(
-                nn_agent,
                 nn_output,
                 base_dist,
                 dist,
@@ -145,19 +140,16 @@ class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
 
     def log_prob(
         self, 
-        nn_agent: NNAgent[gym.Space, gym.spaces.Box],
         nn_output: NNAgentNetworkOutput,
         actions: torch.Tensor, 
         is_update : bool = False,
         stage: AgentStage = AgentStage.ONLINE
     ) -> torch.Tensor:
         base_dist, dist = self.forward_distribution(
-            nn_agent, 
             nn_output, 
             stage
         )
         return __class__.log_prob_distribution(
-            nn_agent,
             nn_output,
             base_dist,
             dist,

@@ -16,7 +16,7 @@
 
 from typing import Any, TypeVar, Generic, Optional, Union, Dict, Iterable, List, SupportsFloat
 from .common import Savable
-from .data import TransitionBatch, EnvironmentStep
+from .data import TransitionBatch, EnvironmentStep, TransitionReplayBuffer
 from abc import ABC, abstractmethod, abstractproperty
 from enum import Enum
 import numpy as np
@@ -30,40 +30,41 @@ class AgentStage(Enum):
     OFFLINE = 4
     EVAL = 5
 
-class AgentActionType(Enum):
-    DISCRETE = 1
-    CONTINUOUS = 2
-
-_ActOutputT = TypeVar("_ActOutputT")
-_StateOutputT = TypeVar("_StateOutputT")
-_LogProbOutputT = TypeVar("_LogProbOutputT", bound=SupportsFloat)
+_ActT = TypeVar("_ActT")
+_StateT = TypeVar("_StateT")
+_LogProbT = TypeVar("_LogProbT", bound=SupportsFloat)
 @dataclass
-class AgentOutput(Generic[_ActOutputT, _StateOutputT, _LogProbOutputT]):
-    action: _ActOutputT
-    log_prob: _LogProbOutputT
-    state: Optional[_StateOutputT]
+class AgentOutput(Generic[_ActT, _StateT, _LogProbT]):
+    action: _ActT
+    log_prob: _LogProbT
+    state: Optional[_StateT]
 
 _ObsT = TypeVar("_ObsT")
-_ActInputT = TypeVar("_ActInputT")
-_StateInputT = TypeVar("_StateInputT")
-class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], Savable, ABC):
+class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     is_sequence_model : bool
-    action_type: AgentActionType
 
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateInputT], 
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]:
-        return next(iter(self.get_action_batch([observation], None, stage))) if state is None else next(iter(self.get_action_batch([observation], [state], stage)))
+        state : Optional[_StateT]
+    ) -> AgentOutput[_ActT, _StateT, _LogProbT]:
+        return next(iter(self.get_action_batch([observation], None))) if state is None else next(iter(self.get_action_batch([observation], [state])))
 
     @property
-    def unwrapped(self) -> "Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]":
+    @abstractmethod
+    def current_stage(self) -> AgentStage:
+        ...
+
+    @property
+    def unwrapped(self) -> "Agent":
         return self
     
     @property
-    def transform_parent(self) -> Optional["Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]"]:
+    def transform_parent(self) -> Optional["Agent"]:
+        return None
+    
+    @property
+    def replay_buffer(self) -> Optional[TransitionReplayBuffer[_ObsT, _ActT, Any]]:
         return None
 
     @abstractmethod
@@ -77,16 +78,14 @@ class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT,
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateInputT]]], 
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]]:
+        states : Optional[Iterable[Optional[_StateT]]]
+    ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
         pass
 
     @abstractmethod
     def observe_transitions(
         self, 
-        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
-        stage : AgentStage = AgentStage.ONLINE
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsT, _ActT]]
     ) -> None:
         pass
 
@@ -99,11 +98,11 @@ class Agent(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT,
         pass
 
     @abstractmethod
-    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
+    def update(self, *args, **kwargs) -> Dict[str, Any]:
         pass
 
-class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT], Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]):
-    def __init__(self, agent : Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]) -> None:
+class AgentWrapper(Generic[_ObsT, _ActT, _StateT, _LogProbT], Agent[_ObsT, _ActT, _StateT, _LogProbT]):
+    def __init__(self, agent : Agent[_ObsT, _ActT, _StateT, _LogProbT]) -> None:
         Agent.__init__(self)
         self._agent = agent
 
@@ -113,32 +112,35 @@ class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateO
         return getattr(self._agent, __name)
 
     @property
-    def unwrapped(self) -> Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]:
+    def current_stage(self) -> AgentStage:
+        return self._agent.current_stage
+    
+    @current_stage.setter
+    def current_stage(self, stage : AgentStage) -> None:
+        self._agent.current_stage = stage
+
+    @property
+    def unwrapped(self) -> Agent:
         return self._agent.unwrapped
 
     @property
-    def transform_parent(self) -> Optional[Agent[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateOutputT, _LogProbOutputT]]:
+    def transform_parent(self) -> Optional[Agent]:
         return self._agent
-
-    @property
-    def action_type(self) -> AgentActionType:
-        return self._agent.action_type
     
+    @property
+    def replay_buffer(self) -> Optional[TransitionReplayBuffer[_ObsT, _ActT, Any]]:
+        return self._agent.replay_buffer
+
     @property
     def is_sequence_model(self) -> bool:
         return self._agent.is_sequence_model
 
-    @property
-    def np_random(self) -> Optional[np.random.Generator]:
-        return self._agent.np_random
-
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateInputT], 
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]:
-        return Agent.get_action(self, observation, state, stage)
+        state : Optional[_StateT]
+    ) -> AgentOutput[_ActT, _StateT, _LogProbT]:
+        return Agent.get_action(self, observation, state)
     
     def seed(
         self, 
@@ -149,17 +151,15 @@ class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateO
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateInputT]]], 
-        stage : AgentStage = AgentStage.ONLINE
-    ) -> Iterable[AgentOutput[_ActOutputT, _StateOutputT, _LogProbOutputT]]:
-        return self._agent.get_action_batch(observations, states, stage)
+        states : Optional[Iterable[Optional[_StateT]]]
+    ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
+        return self._agent.get_action_batch(observations, states)
 
     def observe_transitions(
         self, 
-        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActInputT]], EnvironmentStep[_ObsT, _ActInputT]],
-        stage : AgentStage = AgentStage.ONLINE
+        transition : Union[Iterable[EnvironmentStep[_ObsT, _ActT]], EnvironmentStep[_ObsT, _ActT]]
     ) -> None:
-        self._agent.observe_transitions(transition, stage)
+        self._agent.observe_transitions(transition)
 
     def save(self, path : Union[str, PathLike]) -> None:
         self._agent.save(path)
@@ -167,5 +167,5 @@ class AgentWrapper(Generic[_ObsT, _ActInputT, _ActOutputT, _StateInputT, _StateO
     def load(self, path : Union[str, PathLike]) -> None:
         self._agent.load(path)
 
-    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> Dict[str, Any]:
-        return self._agent.update(stage, *args, **kwargs)
+    def update(self, *args, **kwargs) -> Dict[str, Any]:
+        return self._agent.update(*args, **kwargs)

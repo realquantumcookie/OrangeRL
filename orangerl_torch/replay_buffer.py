@@ -1,7 +1,7 @@
 from orangerl import TransitionBatch, EnvironmentStep, TransitionReplayBuffer, TransitionTransformation, TransitionSampler, UniformTransitionSampler
 from .data import NNBatch, transform_any_array_to_torch, nnbatch_from_transitions
 from tensordict import TensorDictBase, TensorDict, is_tensor_collection
-from torchrl.data.replay_buffers.storages import Storage, ListStorage, LazyTensorStorage, LazyMemmapStorage
+from torchrl.data.replay_buffers.storages import Storage, ListStorage, TensorStorage, LazyTensorStorage, LazyMemmapStorage
 import torch
 from typing import Optional, Callable, Any, Tuple, Union, Dict, Sequence, List, TypeVar, Generic, Iterable
 import collections

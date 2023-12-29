@@ -23,6 +23,7 @@ from orangerl import AgentStage
 from ..agent import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
 
 class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
+
     def __init__(self, action_space: gym.spaces.Discrete) -> None:
         assert isinstance(action_space, gym.spaces.Discrete), "Action space must be Discrete"
         super().__init__(action_space)
@@ -42,7 +43,6 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def forward_distribution(
         self,
-        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput,
         stage : AgentStage = AgentStage.ONLINE
     ):
@@ -55,7 +55,6 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def log_prob_distribution(
         self,
-        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput,
         dist: torch.distributions.TransformedDistribution,
         action: torch.Tensor,
@@ -68,14 +67,12 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def forward(
         self, 
-        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output : NNAgentNetworkOutput, 
         is_update : bool = False,
         stage : AgentStage = AgentStage.ONLINE
     ) -> BatchedNNAgentOutput:
         
         dist = self.forward_distribution(
-            nn_agent, 
             nn_output, 
             stage
         )
@@ -83,7 +80,6 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
         actions = dist.sample()
         actions += self.action_space.start
         log_probs = self.log_prob_distribution(
-            nn_agent,
             nn_output,
             dist,
             actions,
@@ -100,19 +96,16 @@ class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
 
     def log_prob(
         self, 
-        nn_agent: NNAgent[gym.Space, gym.spaces.Discrete],
         nn_output: NNAgentNetworkOutput,
         actions: torch.Tensor, 
         is_update : bool = False,
         stage: AgentStage = AgentStage.ONLINE
     ) -> torch.Tensor:
         dist = self.forward_distribution(
-            nn_agent, 
             nn_output, 
             stage
         )
         return self.log_prob_distribution(
-            nn_agent,
             nn_output,
             dist,
             actions,
