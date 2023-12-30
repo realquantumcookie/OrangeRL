@@ -42,6 +42,7 @@ class AgentOutput(Generic[_ActT, _StateT, _LogProbT]):
 _ObsT = TypeVar("_ObsT")
 class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     is_sequence_model : bool
+    observe_transition_infos : bool
 
     def get_action(
         self, 
@@ -154,6 +155,10 @@ class AgentWrapper(Generic[_ObsT, _ActT, _StateT, _LogProbT], Agent[_ObsT, _ActT
         states : Optional[Iterable[Optional[_StateT]]]
     ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
         return self._agent.get_action_batch(observations, states)
+
+    @property
+    def observe_transition_infos(self) -> bool:
+        return self._agent.observe_transition_infos
 
     def observe_transitions(
         self, 

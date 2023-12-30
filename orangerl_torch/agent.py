@@ -15,7 +15,7 @@
 """
 
 from orangerl import Agent, AgentOutput, AgentStage, TransitionBatch, EnvironmentStep
-from .data import NNBatch, Tensor_Or_Numpy, transform_any_array_to_numpy, transform_any_array_to_torch
+from .data import NNBatch, Tensor_Or_Numpy, transform_any_array_to_numpy, transform_any_array_to_torch, nnbatch_from_transitions
 from .replay_buffer import NNReplayBuffer
 from abc import abstractmethod, ABC
 import numpy as np
@@ -27,7 +27,8 @@ from dataclasses import dataclass
 import gymnasium as gym
 from os import PathLike
 
-Tensor_Or_TensorDict = Union[torch.Tensor, TensorDict]
+Tensor_Or_TensorDict = Union[torch.Tensor, TensorDictBase]
+Tensor_Or_TensorDict_Or_Numpy_Or_Dict = Union[torch.Tensor, TensorDictBase, np.ndarray, Dict[str, Any]]
 NNAgentOutput = AgentOutput[Tensor_Or_TensorDict, Tensor_Or_TensorDict, torch.Tensor]
 
 @dataclass
@@ -71,6 +72,7 @@ class NNAgent(Agent[
     """
     NNAgent is an agent that uses a neural network (written in PyTorch) to map observations to actions.
     """
+    observe_transition_infos : bool
 
     def __init__(
         self, 
@@ -146,7 +148,23 @@ class NNAgent(Agent[
     @abstractmethod
     def observe_transitions(
         self, 
-        transition : Union[Iterable[EnvironmentStep[Tensor_Or_TensorDict, Tensor_Or_TensorDict]], EnvironmentStep[Tensor_Or_TensorDict, Tensor_Or_TensorDict]]
+        transition : Union[
+            Iterable[EnvironmentStep[Tensor_Or_TensorDict_Or_Numpy_Or_Dict, Tensor_Or_TensorDict_Or_Numpy_Or_Dict]], 
+            EnvironmentStep[Tensor_Or_TensorDict_Or_Numpy_Or_Dict, Tensor_Or_TensorDict_Or_Numpy_Or_Dict]
+        ]
+    ) -> None:
+        if isinstance(transition, NNBatch):
+            to_observe = transition
+        elif isinstance(transition, EnvironmentStep):
+            to_observe = nnbatch_from_transitions([transition], save_info=self.observe_transition_infos)
+        else:
+            to_observe = nnbatch_from_transitions(transition, save_info=self.observe_transition_infos)
+        self._observe_transitions(to_observe)
+
+    @abstractmethod
+    def _observe_transitions(
+        self,
+        transition : NNBatch
     ) -> None:
         ...
 

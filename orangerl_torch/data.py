@@ -121,7 +121,7 @@ class NNBatch(TransitionSequence[torch.Tensor, torch.Tensor]):
                 ) for i in index
             ]
 
-def info_dict_to_tensor_dict(info_dict : Dict[str, Any]) -> TensorDictBase:
+def dict_to_tensor_dict(info_dict : Dict[str, Any]) -> TensorDictBase:
     if is_tensor_collection(info_dict):
         return info_dict
     else:
@@ -130,7 +130,7 @@ def info_dict_to_tensor_dict(info_dict : Dict[str, Any]) -> TensorDictBase:
             if is_tensor_collection(v) or isinstance(v, torch.Tensor):
                 copy_dict[k] = v
             if isinstance(v, dict):
-                copy_dict[k] = info_dict_to_tensor_dict(v)
+                copy_dict[k] = dict_to_tensor_dict(v)
             elif isinstance(v, np.ndarray):
                 copy_dict[k] = torch.from_numpy(v)
             elif isinstance(v, int):
@@ -153,7 +153,7 @@ def nnbatch_from_transitions(
         return NNBatch.from_tensordict(transitions)
     
     transitions = transitions if isinstance(transitions, Sequence) else list(transitions)
-    transformed_infos = torch.stack([info_dict_to_tensor_dict(step.info) for step in transitions]) if save_info and reduce(
+    transformed_infos = torch.stack([dict_to_tensor_dict(step.info) for step in transitions]) if save_info and reduce(
         lambda x, y: x and y, 
         [step.info is not None for step in transitions],
         True
