@@ -91,7 +91,6 @@ class NNAgentActorImpl(NNAgent):
         obs_batch: Tensor_Or_TensorDict,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
         is_update = False,
         **kwargs: Any,
     ) -> BatchedNNAgentOutput:
@@ -99,7 +98,7 @@ class NNAgentActorImpl(NNAgent):
             obs_batch,
             masks,
             state,
-            is_seq,
+            self.is_sequence_model,
             is_update,
             self.current_stage,
         )
@@ -130,6 +129,8 @@ class BatchedNNCriticOutput:
     is_seq : bool = False
 
 class NNAgentCritic(ABC, nn.Module):
+    is_sequence_model : bool
+    empty_state : Optional[Tensor_Or_TensorDict]
 
     @abstractmethod
     def forward(
@@ -137,9 +138,47 @@ class NNAgentCritic(ABC, nn.Module):
         obs_batch: Tensor_Or_TensorDict,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
         is_update = False,
         **kwargs: Any,
     ) -> BatchedNNCriticOutput:
         ...
 
+class NNAgentCriticMapper(ABC, nn.Module):
+    @abstractmethod
+    def forward(
+        self, 
+        nn_output : NNAgentNetworkOutput, 
+        is_update : bool = False,
+        stage : AgentStage = AgentStage.ONLINE
+    ) -> BatchedNNCriticOutput:
+        ...
+
+class NNAgentCriticImpl(NNAgentCritic):
+    def __init__(
+        self,
+        critic_input_mapper: NNAgentInputMapper,
+        critic_network : nn.Module,
+        critic_mapper: NNAgentCriticMapper,
+        is_sequence_model : bool,
+        empty_state : Optional[Tensor_Or_TensorDict]
+    ):
+        NNAgentCritic.__init__(self)
+        self.critic_input_mapper = critic_input_mapper
+        self.critic_network = critic_network
+        self.critic_mapper = critic_mapper
+        self._is_sequence_model = is_sequence_model
+        self.empty_state = empty_state
+
+    @property
+    def is_sequence_model(self) -> bool:
+        return self._is_sequence_model
+
+    def forward(
+        self,
+        obs_batch: Tensor_Or_TensorDict,
+        masks: Optional[torch.Tensor] = None,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_update = False,
+        **kwargs: Any,
+    ) -> BatchedNNCriticOutput:
+        ...

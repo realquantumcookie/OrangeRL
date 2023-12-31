@@ -130,7 +130,6 @@ class NNAgent(Agent[
         obs_batch: Tensor_Or_TensorDict,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
         is_update = False,
         **kwargs: Any,
     ) -> BatchedNNAgentOutput:
@@ -227,7 +226,7 @@ class NNAgent(Agent[
             
             input_state = input_state.to(device, dtype=dtype)
         
-        output = self.forward(input_obs, state = input_state, is_seq=self.is_sequence_model)
+        output = self.forward(input_obs, state = input_state, is_update=False)
         return output
 
     def save(self, path : Union[str, PathLike]) -> None:
