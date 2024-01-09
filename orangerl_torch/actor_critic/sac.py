@@ -1,8 +1,7 @@
 from orangerl import AgentStage, EnvironmentStep
-from orangerl_torch.data import Tensor_Or_Numpy, NNBatch
-from orangerl_torch.replay_buffer import NNReplayBuffer
-from orangerl_torch.agent import Tensor_Or_TensorDict, NNAgent, NNAgentWithCritic, NNAgentCriticEstimateOutput, NNAgentNetworkOutput, NNAgentActorNet, NNAgentCriticNet
+from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNBatch, NNReplayBuffer, NNAgentActor, NNAgentCritic, BatchedNNAgentOutput, BatchedNNCriticOutput
 from orangerl_torch.action_mappers.tanh_bound import NNAgentTanhActionMapper
+from .base import NNActorCriticAgent
 from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable
 import gymnasium as gym
 import torch
@@ -12,55 +11,64 @@ import numpy as np
 from tensordict import TensorDictBase, TensorDict
 import copy
 
-class SACLearnerAgent(NNAgent[gym.Space, gym.spaces.Box], NNAgentWithCritic):
+class SACLearnerAgent(NNActorCriticAgent):
+    observe_transition_infos : bool = False
+
     def __init__(
         self,
-        actor_net: NNAgentActorNet,
-        actor_net_optimizer: torch.optim.Optimizer,
-        actor_net_lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-        critic_net: NNAgentCriticNet,
-        critic_net_optimizer: torch.optim.Optimizer,
-        critic_net_lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-        observation_space: gym.Space,
-        action_space: gym.spaces.Box,
+        actor: NNAgentActor,
+        actor_optimizer: torch.optim.Optimizer,
+        actor_lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+        critic: NNAgentCritic,
+        critic_optimizer: torch.optim.Optimizer,
+        critic_lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
         replay_buffer : NNReplayBuffer,
         target_entropy : Optional[float] = None,
-        critic_to_actor_ratio: int = 1,
-        is_sequence_model: bool = False,
-        empty_state_vector: Optional[Tensor_Or_TensorDict] = None,
-        decay_factor: float = 0.99,
-        target_critic_tau: float = 0.005,
+        temperature_alpha : Optional[float] = None,
+        utd_ratio: int = 1,
+        actor_delay : int = 1,
+        decay_factor: float = 0.99, # This param is used to decay the rewards
+        target_critic_tau: float = 0.005, # This param is used to update the target critic network
     ):
-        super().__init__(is_sequence_model, empty_state_vector, decay_factor)
+        NNActorCriticAgent.__init__(
+            self,
+            is_sequence_model=self.actor.is_sequence_model,
+            empty_state=self.actor.empty_state,
+            init_stage=AgentStage.ONLINE,
+            decay_factor=decay_factor
+        )
         
-        assert actor_net_optimizer is not None or actor_net_lr_scheduler is None, "If actor_net_optimizer is None, then actor_net_lr_scheduler must be None"
-        assert critic_net_optimizer is not None or critic_net_lr_scheduler is None, "If critic_net_optimizer is None, then critic_net_lr_scheduler must be None"
-        assert critic_to_actor_ratio >= 1, "critic_to_actor_ratio must be at least 1"
-        assert replay_buffer.sample_batch_size % critic_to_actor_ratio == 0, "critic_to_actor_ratio must divide sample_batch_size"
+        assert utd_ratio >= 1, "utd_ratio must be at least 1"
+        assert actor_delay >= 1, "actor_delay must be at least 1"
+        assert replay_buffer.sample_batch_size % actor_delay == 0, "actor_delay must divide sample_batch_size"
         assert target_critic_tau > 0.0 and target_critic_tau < 1.0, "target_critic_tau must be between 0.0 and 1.0"
 
-        self.actor_net = actor_net
-        self.actor_net_optimizer = actor_net_optimizer
-        self.actor_net_lr_scheduler = actor_net_lr_scheduler
-        self.critic_net = critic_net
-        self.target_critic_net = copy.deepcopy(critic_net)
-        self.target_critic_net.eval()
-        for param in self.target_critic_net.parameters():
-            param.requires_grad = False
+        self.actor = actor
+        self.actor_optimizer = actor_optimizer
+        self.actor_lr_scheduler = actor_lr_scheduler
 
-        self.critic_net_optimizer = critic_net_optimizer
-        self.critic_net_lr_scheduler = critic_net_lr_scheduler
-        self.action_mapper = NNAgentTanhActionMapper(action_space)
-        self.observation_space = observation_space
-        self.replay_buffer = replay_buffer
-        self.target_entropy = target_entropy if target_entropy is not None else -(np.prod(action_space.shape) / 2.0)
-        self.critic_to_actor_ratio = critic_to_actor_ratio
-        self.temperature_alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        self.critic = critic
+        self.critic_optimizer = critic_optimizer
+        self.critic_lr_scheduler = critic_lr_scheduler
+
+        self.utd_ratio = utd_ratio
+        self.actor_delay = actor_delay
         self.target_critic_tau = target_critic_tau
 
-    @property
-    def action_space(self) -> gym.spaces.Box:
-        return self.action_mapper.action_space
+        assert target_entropy is None or temperature_alpha is None, "Only one of target_entropy and temperature_alpha can be specified"
+        assert not (target_entropy is None and temperature_alpha is None), "Either target_entropy or temperature_alpha must be specified"
+        if temperature_alpha is not None:
+            self.temperature_alpha = nn.Parameter(torch.tensor(temperature_alpha), requires_grad=True)
+        else:
+            self.temperature_alpha = nn.Parameter(torch.zeros(1), requires_grad=True)
+        self.target_entropy = target_entropy
+
+        # Create the target critic
+        self.target_critic = copy.deepcopy(self.critic)
+        self.target_critic.eval()
+        self.target_critic.requires_grad_(False)
+        for param, target_param in zip(self.critic.parameters(), self.target_critic.parameters()):
+            target_param.data.copy_(param.data)
 
     @property
     def has_replay_buffer(self) -> bool:
@@ -70,209 +78,161 @@ class SACLearnerAgent(NNAgent[gym.Space, gym.spaces.Box], NNAgentWithCritic):
         self, 
         seed : Optional[int] = None
     ) -> None:
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
+        pass
     
-    def evaluate_critic(
-        self,
-        obs_batch: torch.Tensor,
-        masks: Optional[torch.Tensor] = None,
-        state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
-        **kwargs: Any,
-    ) -> NNAgentCriticEstimateOutput:
-        assert is_seq == self.is_sequence_model, "is_seq must match the is_sequence_model of the agent"
-        if is_seq and masks is not None:
-            assert masks.ndim == 2, "masks must be a 2D tensor"
-            assert masks.shape[:2] == obs_batch.shape[:2], "masks must have the same batch size and sequence length as obs_batch"
-            assert state is None or (
-                state.shape[:1] == obs_batch.shape[:1]
-            ), "state must have the same batch size as obs_batch"
-        elif not is_seq:
-            assert masks is None, "masks must be None if is_seq is False"
-            assert state is None, "state must be None if is_seq is False"
-
-        ret = self.critic_net(
-            obs_batch,
-            masks,
-            state,
-            is_seq,
-            stage,
-            **kwargs
-        )
-        assert isinstance(ret.output, torch.Tensor), "The output of the critic network must be a tensor"
-        return ret
-
-    def evaluate_target_critic(
-        self,
-        obs_batch: torch.Tensor,
-        masks: Optional[torch.Tensor] = None,
-        state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
-        **kwargs: Any,
-    ) -> NNAgentCriticEstimateOutput:
-        assert is_seq == self.is_sequence_model, "is_seq must match the is_sequence_model of the agent"
-        if is_seq and masks is not None:
-            assert masks.ndim == 2, "masks must be a 2D tensor"
-            assert masks.shape[:2] == obs_batch.shape[:2], "masks must have the same batch size and sequence length as obs_batch"
-            assert state is None or (
-                state.shape[:1] == obs_batch.shape[:1]
-            ), "state must have the same batch size as obs_batch"
-        elif not is_seq:
-            assert masks is None, "masks must be None if is_seq is False"
-            assert state is None, "state must be None if is_seq is False"
-
-        with torch.no_grad():
-            ret = self.target_critic_net(
-                obs_batch,
-                masks,
-                state,
-                is_seq,
-                stage,
-                **kwargs
-            )
-        assert isinstance(ret.output, torch.Tensor), "The output of the critic network must be a tensor"
-        return ret
-
+    @property
+    def is_sequence_model(self) -> bool:
+        return self.actor.is_sequence_model
 
     def forward(
         self,
-        obs_batch: torch.Tensor,
+        obs_batch: Tensor_Or_TensorDict,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
-        stage: AgentStage = AgentStage.ONLINE,
+        is_update = False,
         **kwargs: Any,
-    ) -> NNAgentNetworkOutput:
-        assert is_seq == self.is_sequence_model, "is_seq must match the is_sequence_model of the agent"
-        if is_seq and masks is not None:
-            assert masks.ndim == 2, "masks must be a 2D tensor"
-            assert masks.shape[:2] == obs_batch.shape[:2], "masks must have the same batch size and sequence length as obs_batch"
-            assert state is None or (
-                state.shape[:1] == obs_batch.shape[:1]
-            ), "state must have the same batch size as obs_batch"
-        elif not is_seq:
-            assert masks is None, "masks must be None if is_seq is False"
-            assert state is None, "state must be None if is_seq is False"
-
-        return self.actor_net(
+    ) -> BatchedNNAgentOutput:
+        return self.actor.forward(
             obs_batch,
             masks,
             state,
-            is_seq,
-            stage,
+            is_update,
             **kwargs
         )
 
-    def observe_transitions(
-        self, 
-        transition : Union[Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]],
-        stage : AgentStage = AgentStage.ONLINE
+    def _observe_transitions(
+        self,
+        transition : NNBatch
     ) -> None:
-        self.replay_buffer += transition
+        self.replay_buffer.extend(transition)
 
-    def update(self, stage: AgentStage = AgentStage.ONLINE, *args, **kwargs) -> TensorDict:
-        device = next(self.actor_net.parameters()).device
-        batch = self.replay_buffer.sample(device)
-        minibatch_size = batch.size(0) // self.critic_to_actor_ratio
-        critic_infos = []
-        for i in range(self.critic_to_actor_ratio):
-            minibatch = batch[i * minibatch_size : (i + 1) * minibatch_size]
-            critic_infos.append(self.update_critic(minibatch, stage))
-        critic_infos = torch.mean(torch.stack(critic_infos))
-        actor_infos = self.update_actor_and_temperature(batch, stage)
-        return TensorDict({
+    def update(self, *args, **kwargs) -> Dict[str, Any]:
+        device = next(self.parameters()).device
+        for _ in range(self.utd_ratio):
+            batch = self.replay_buffer.sample(device)
+            minibatch_size = batch.size(0) // self.actor_delay
+            
+            for i in range(self.actor_delay):
+                minibatch = batch[i * minibatch_size : (i + 1) * minibatch_size]
+                critic_infos = self.update_critic(minibatch)
+            actor_infos = self.update_actor(batch)
+        
+        return {
             **critic_infos,
             **actor_infos
-        }, batch_size=())
+        }
     
-    def _sync_target_critic(self) -> None:
-        for target_param, param in zip(self.target_critic_net.parameters(), self.critic_net.parameters()):
-            target_param.data.copy_(
-                self.target_critic_tau * param.data + (1.0 - self.target_critic_tau) * target_param.data,
-                non_blocking=True
-            )
-
-    def update_critic(self, batch : NNBatch, stage : AgentStage = AgentStage.ONLINE) -> TensorDict:
-        output_batch = self.evaluate_critic(
-            batch.observations,
-            batch.masks,
-            None,
-            self.is_sequence_model,
-            stage
+    def update_critic(self, minibatch : NNBatch, **kwargs) -> Dict[str, Any]:
+        critic_output = self.critic.forward(
+            obs_batch=minibatch.observations,
+            act_batch=minibatch.actions,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
         )
+        actor_output = self.actor.forward(
+            obs_batch=minibatch.next_observations,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
+        )
+        next_critic_output = self.target_critic.forward(
+            obs_batch=minibatch.next_observations,
+            act_batch=actor_output.actions,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
+        )
+        if self.is_sequence_model:
+            fetch_idx = torch.sum(minibatch.masks.to(torch.bool), dim=-1) - 1
+            gather_mask = fetch_idx.unsqueeze(1)
+            next_q_values : torch.Tensor = torch.gather(
+                next_critic_output,
+                dim=1,
+                index=gather_mask
+            ).squeeze(1)
+            current_q_values : torch.Tensor = torch.gather(
+                critic_output,
+                dim=1,
+                index=gather_mask
+            ).squeeze(1)
+            current_rewards : torch.Tensor = torch.gather(
+                minibatch.rewards,
+                dim=1,
+                index=gather_mask
+            ).squeeze(1)
+            
+        else:
+            current_q_values = critic_output.critic_estimates
+            next_q_values = next_critic_output.critic_estimates
+            current_rewards = minibatch.rewards
+        target_q_values = current_rewards + self.decay_factor * next_q_values
+        critic_loss = nn.functional.mse_loss(current_q_values, target_q_values)
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+        if self.critic_lr_scheduler is not None:
+            self.critic_lr_scheduler.step()
+        
+        self._sync_target_critic()
 
-        critic_each_batch = output_batch.output
-        batch_end_sequence_idx = None
-        if not self.is_sequence_model:
-            critic_each_batch = critic_each_batch.reshape(critic_each_batch.size(0))
-            terminations_each_batch = batch.terminations.reshape(batch.terminations.size(0))
-            next_critics = self.evaluate_target_critic(
-                batch.next_observations,
-                batch.masks,
-                None,
-                self.is_sequence_model,
-                stage
+        return {
+            "critic_loss": critic_loss.item(),
+            "q": current_q_values.mean().item()
+        }
+    
+    def update_actor(self, minibatch : NNBatch, **kwargs) -> Dict[str, Any]:
+        actor_output = self.actor.forward(
+            obs_batch=minibatch.observations,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
+        )
+        critic_output = self.critic.forward(
+            obs_batch=minibatch.observations,
+            act_batch=actor_output.actions,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
+        )
+        if self.is_sequence_model:
+            fetch_idx = torch.sum(minibatch.masks.to(torch.bool), dim=-1) - 1
+            gather_mask = fetch_idx.unsqueeze(1)
+            q_values = torch.gather(
+                critic_output.critic_estimates,
+                dim=1,
+                index=gather_mask
+            ).squeeze(1)
+            log_probs = torch.gather(
+                actor_output.log_probs,
+                dim=1,
+                index=gather_mask
             )
         else:
-            critic_each_batch = critic_each_batch.reshape(critic_each_batch.size(0), critic_each_batch.size(1))
-            batch_next_sequence_idx = torch.sum(batch.masks.to(torch.bool), dim=-1)
-            batch_end_sequence_idx = batch_next_sequence_idx - 1
-            critic_each_batch = torch.gather(
-                critic_each_batch, 1, batch_end_sequence_idx.unsqueeze(-1)
-            ).squeeze(-1)
-            terminations_each_batch = torch.gather(
-                batch.terminations, 1, batch_end_sequence_idx.unsqueeze(-1)
-            ).squeeze(-1)
-            observations_next = torch.gather(
-                batch.next_observations, 1, batch_end_sequence_idx.unsqueeze(-1).expand(-1, -1, batch.next_observations.shape[2:])
+            q_values = critic_output.critic_estimates
+            log_probs = actor_output.log_probs
+        actor_loss = (self.temperature_alpha.detach() * log_probs - q_values).mean()
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+        if self.actor_lr_scheduler is not None:
+            self.actor_lr_scheduler.step()
+        
+        # Update Temperature Alpha
+        if self.target_entropy is not None:
+            # Negative Log Probability is the actor entropy
+            temperature_alpha_loss = (self.temperature_alpha * (- log_probs - self.target_entropy).detach()).mean()
+            self.actor_optimizer.zero_grad()
+            temperature_alpha_loss.backward()
+            self.actor_optimizer.step()
+            if self.actor_lr_scheduler is not None:
+                self.actor_lr_scheduler.step()
+
+    def _sync_target_critic(self) -> None:
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(
+                (1.0 - self.target_critic_tau) * target_param.data + self.target_critic_tau * param.data,
+                non_blocking=True
             )
-            next_critics = self.evaluate_target_critic(
-                observations_next,
-                None,
-                output_batch.state,
-                self.is_sequence_model,
-                stage
-            ).output.squeeze(-1)
-        target_critic_batch = batch.rewards + (1.0 - terminations_each_batch) * self.decay_factor * next_critics.output
-        target_critic_batch = target_critic_batch.detach()
-        critic_loss = nn.functional.mse_loss(critic_each_batch, target_critic_batch)
-        self.critic_net_optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic_net_optimizer.step()
-        if self.critic_net_lr_scheduler is not None:
-            self.critic_net_lr_scheduler.step()
-        self._sync_target_critic()
-        with torch.no_grad():
-            return TensorDict({
-                "critic_loss": critic_loss.item(),
-                "q": critic_each_batch.mean()
-            }, batch_size=())
     
-    def update_actor_and_temperature(self, batch : NNBatch, stage : AgentStage = AgentStage.ONLINE) -> TensorDict:
-        output_batch = self.forward(
-            batch.observations,
-            batch.masks,
-            None,
-            self.is_sequence_model,
-            stage
-        )
-        output_critic = self.evaluate_critic(
-            batch.actions,
-            batch.masks,
-            None,
-            self.is_sequence_model,
-            stage
-        )
-
-        mapped_action = self.action_mapper.forward(
-            self,
-            output_batch,
-            is_update=True,
-            stage=stage
-        )
-
 

@@ -20,13 +20,14 @@ import torch
 from tensordict import is_tensor_collection, TensorDictBase
 import numpy as np
 from orangerl import AgentStage
-from ..agent import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
+from orangerl_torch import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
 
-class NNAgentDiscreteActionMapper(NNAgentActionMapper[gym.spaces.Discrete]):
+class NNAgentDiscreteActionMapper(NNAgentActionMapper):
 
     def __init__(self, action_space: gym.spaces.Discrete) -> None:
         assert isinstance(action_space, gym.spaces.Discrete), "Action space must be Discrete"
-        super().__init__(action_space)
+        super().__init__()
+        self.action_space = action_space
     
     # @property
     # def action_space(self) -> gym.spaces.Discrete:

@@ -32,7 +32,6 @@ def pin_memory_output(fun) -> Callable:
 class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
     def __init__(
         self,
-        *,
         storage: Storage = ListStorage(max_size=1_000),
         sample_batch_size: int = 256,
         sampler : TransitionSampler = UniformTransitionSampler(),

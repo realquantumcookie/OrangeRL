@@ -73,6 +73,7 @@ class NNAgent(Agent[
     NNAgent is an agent that uses a neural network (written in PyTorch) to map observations to actions.
     """
     observe_transition_infos : bool
+    replay_buffer : Optional[NNReplayBuffer]
 
     def __init__(
         self, 
@@ -117,10 +118,6 @@ class NNAgent(Agent[
         pass
 
     @property
-    def replay_buffer(self) -> Optional[NNReplayBuffer]:
-        return None
-
-    @property
     def is_sequence_model(self) -> bool:
         return self._is_sequence_model
 
@@ -144,7 +141,6 @@ class NNAgent(Agent[
         """
         ...
 
-    @abstractmethod
     def observe_transitions(
         self, 
         transition : Union[

@@ -20,13 +20,14 @@ import torch
 from tensordict import is_tensor_collection, TensorDictBase
 import numpy as np
 from orangerl import AgentStage
-from ..agent import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
+from orangerl_torch import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
 
-class NNAgentTanhActionMapper(NNAgentActionMapper[gym.spaces.Box]):
+class NNAgentTanhActionMapper(NNAgentActionMapper):
     def __init__(self, action_space: gym.spaces.Box) -> None:
         assert isinstance(action_space, gym.spaces.Box), "Action space must be a Box"
         assert np.all(np.isfinite(action_space.low)) and np.all(np.isfinite(action_space.high)), "Action space must be bounded"
-        super().__init__(action_space)
+        super().__init__()
+        self.action_space = action_space
     
     @property
     def action_space(self) -> gym.spaces.Box:
