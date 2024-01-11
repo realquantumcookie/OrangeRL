@@ -33,8 +33,8 @@ class SACLearnerAgent(NNActorCriticAgent):
     ):
         NNActorCriticAgent.__init__(
             self,
-            is_sequence_model=self.actor.is_sequence_model,
-            empty_state=self.actor.empty_state,
+            is_sequence_model=actor.is_sequence_model,
+            empty_state=actor.empty_state,
             init_stage=AgentStage.ONLINE,
             decay_factor=decay_factor
         )
@@ -55,6 +55,8 @@ class SACLearnerAgent(NNActorCriticAgent):
         self.utd_ratio = utd_ratio
         self.actor_delay = actor_delay
         self.target_critic_tau = target_critic_tau
+
+        self.replay_buffer = replay_buffer
 
         assert target_entropy is None or temperature_alpha is None, "Only one of target_entropy and temperature_alpha can be specified"
         assert not (target_entropy is None and temperature_alpha is None), "Either target_entropy or temperature_alpha must be specified"
@@ -85,22 +87,6 @@ class SACLearnerAgent(NNActorCriticAgent):
     @property
     def is_sequence_model(self) -> bool:
         return self.actor.is_sequence_model
-
-    def forward(
-        self,
-        obs_batch: Tensor_Or_TensorDict,
-        masks: Optional[torch.Tensor] = None,
-        state: Optional[Tensor_Or_TensorDict] = None,
-        is_update = False,
-        **kwargs: Any,
-    ) -> BatchedNNAgentOutput:
-        return self.actor.forward(
-            obs_batch,
-            masks,
-            state,
-            is_update,
-            **kwargs
-        )
 
     def _observe_transitions(
         self,

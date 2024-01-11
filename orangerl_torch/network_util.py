@@ -6,7 +6,7 @@ def MLP(
     input_dim: int,
     output_dim : int,
     hidden_dims : List[int],
-    activations : Optional[Callable[[int, int], nn.Module]] = lambda x: nn.ReLU(),
+    activations : Optional[Callable[[int, int], nn.Module]] = lambda prev_dim, next_dim: nn.ReLU(),
     last_layer_activation : Optional[Callable[[int, int], nn.Module]] = None,
     use_layer_norm : bool = False,
     dropout_rate : Optional[float] = None,
@@ -34,3 +34,12 @@ def MLP(
         prev_dim = next_dim
     
     return nn.Sequential(*all_layers)
+
+class ReshapeNNLayer(nn.Module):
+    def __init__(self, shape : torch.Size):
+        super().__init__()
+        self.shape = shape
+    
+    def forward(self, x : torch.Tensor):
+        real_shape = [x.size(0)] + list(self.shape)
+        return x.view(real_shape)

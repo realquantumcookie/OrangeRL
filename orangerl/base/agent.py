@@ -43,6 +43,7 @@ _ObsT = TypeVar("_ObsT")
 class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     is_sequence_model : bool
     observe_transition_infos : bool
+    replay_buffer : Optional[TransitionReplayBuffer[_ObsT, _ActT, Any]]
 
     def get_action(
         self, 
@@ -62,10 +63,6 @@ class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     
     @property
     def transform_parent(self) -> Optional["Agent"]:
-        return None
-    
-    @property
-    def replay_buffer(self) -> Optional[TransitionReplayBuffer[_ObsT, _ActT, Any]]:
         return None
 
     @abstractmethod

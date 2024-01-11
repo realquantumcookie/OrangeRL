@@ -29,7 +29,7 @@ def pin_memory_output(fun) -> Callable:
 
     return decorated_fun
 
-class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
+class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor, NNBatch]):
     def __init__(
         self,
         storage: Storage = ListStorage(max_size=1_000),
@@ -165,22 +165,14 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         step_data = nnbatch_from_transitions([step])[0]
         self._add(step_data)
 
-    def _add(self, data : TensorDictBase) -> None:
+    def _add(self, data : NNBatch) -> None:
         assert data.batch_size == (), "data must be a single transition"
         assert data['masks'] is None or data['masks'].all(), "masks must be None or all True"
         
-        to_insert = NNBatch(
-            observations = data['observations'],
-            actions = data['actions'],
-            rewards = data['rewards'],
-            next_observations = data['next_observations'],
-            terminations = data['terminations'],
-            truncations = data['truncations'],
-            masks=None,
-            infos = data['infos'] if self.save_info and 'infos' in data.keys() else None,
-            batch_size=()
-        )
-        
+        storage_device = self._storage.device if hasattr(self._storage, "device") else None
+        to_insert : NNBatch = data.to(device=storage_device)
+        to_insert.masks = None
+
         with self._replay_lock:
             index = self._write_cursor
             self._storage[index] = to_insert
@@ -197,20 +189,13 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         
         return index
 
-    def _extend(self, data: TensorDictBase) -> Sequence[int]:
+    def _extend(self, data: NNBatch) -> Sequence[int]:
         assert data.ndim == 1, "data must be a batch of transitions"
-        data = data if data["masks"] is None else data[data["masks"]]
-        to_insert = NNBatch(
-            observations = data['observations'],
-            actions = data['actions'],
-            rewards = data['rewards'],
-            next_observations = data['next_observations'],
-            terminations = data['terminations'],
-            truncations = data['truncations'],
-            masks=None,
-            infos = data['infos'] if self.save_info and 'infos' in data.keys() else None,
-            batch_size=()
-        )
+        data = data if "masks" not in data.keys() or data.get("masks") is None else data[data.get("masks")]
+        
+        storage_device = self._storage.device if hasattr(self._storage, "device") else None
+        to_insert : NNBatch = data.to(device=storage_device)
+        to_insert.masks = None
 
         with self._replay_lock:
             index = np.arange(self._write_cursor, self._write_cursor + to_insert.size(0) + 1) % self.capacity
@@ -218,7 +203,7 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
             self._write_cursor = index[-1]
 
             # Update episode ends
-            episode_ends = torch.logical_or(to_insert['terminations'], to_insert['truncations']).cpu().numpy()
+            episode_ends = torch.logical_or(to_insert.terminations, to_insert.truncations).cpu().numpy()
             idx_in_episode_ends = np.isin(index[:-1], self._idx_episode_ends)
             need_sort = False
             for i, idx in enumerate(index[:-1]):
@@ -241,6 +226,25 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor]):
         else:
             data_dict = nnbatch_from_transitions(data)
         return self._extend(data_dict)
+
+    def __setitem__(
+            self, 
+            index: Union[int, slice, Sequence[int]], 
+            value: Union[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy], Iterable[EnvironmentStep[Tensor_Or_Numpy, Tensor_Or_Numpy]], TransitionBatch[Tensor_Or_Numpy, Tensor_Or_Numpy]]
+        ) -> None:
+        storage_device = self._storage.device if hasattr(self._storage, "device") else None
+        with self._replay_lock:
+            if isinstance(value, NNBatch):
+                self._storage[index] = value.to(device=storage_device)
+            else:
+                to_insert = nnbatch_from_transitions(value).to(device=storage_device)
+                self._storage[index] = to_insert
+
+    def __delitem__(
+        self, 
+        index: Union[int, slice, Sequence[int]]
+    ) -> None:
+        raise NotImplementedError("Cannot delete from replay buffer")
 
     @pin_memory_output
     def _sample(self, **kwargs) -> NNBatch:

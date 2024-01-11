@@ -95,7 +95,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
             action = action.reshape(action.shape[0], -1)
         
         log_prob : torch.Tensor = dist.log_prob(action)
-        sum_dims = log_prob.shape[2:] if nn_output.is_seq else log_prob.shape[1:]
+        sum_dims = list(range(2, log_prob.ndim)) if nn_output.is_seq else list(range(1, log_prob.ndim))
         log_prob = torch.sum(log_prob, dim=sum_dims)
         return log_prob
 

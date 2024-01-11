@@ -20,7 +20,7 @@ import numpy as np
 
 _ObsT = TypeVar("_ObsT")
 _ActT = TypeVar("_ActT")
-class CommonTransitionSamplerBase(Generic[_ObsT, _ActT], TransitionSampler[_ObsT, _ActT]):
+class CommonTransitionSamplerBase(TransitionSampler[_ObsT, _ActT]):
     def __init__(self, seed : Optional[int] = None):
         self.randomness = np.random.default_rng(seed)
     

@@ -190,6 +190,8 @@ class NNAgent(Agent[
         """
         if device is None:
             device = next(self.parameters()).device
+        if dtype is None:
+            dtype = next(self.parameters()).dtype
         
         if isinstance(observations, (torch.Tensor, TensorDict)):
             input_obs = observations
@@ -198,7 +200,8 @@ class NNAgent(Agent[
         
         if self.is_sequence_model:
             input_obs = input_obs.unsqueeze(1)
-        input_obs.to(device, dtype=dtype, non_blocking=True)
+        
+        input_obs = input_obs.to(device, dtype=dtype, non_blocking=True)
 
         if not self.is_sequence_model or states is None:
             input_state = None

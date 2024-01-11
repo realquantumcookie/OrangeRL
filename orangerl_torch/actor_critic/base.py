@@ -1,5 +1,5 @@
 from orangerl import AgentStage, EnvironmentStep
-from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNAgentActor, NNAgentCritic, NNBatch
+from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNAgentActor, NNAgentCritic, NNBatch, BatchedNNAgentOutput
 from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable
 import gymnasium as gym
 import torch
@@ -15,6 +15,22 @@ class NNActorCriticAgent(NNAgent, ABC):
     critic : NNAgentCritic
     utd_ratio : int = 1
     actor_delay : int = 1
+
+    def forward(
+        self,
+        obs_batch: Tensor_Or_TensorDict,
+        masks: Optional[torch.Tensor] = None,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_update = False,
+        **kwargs: Any,
+    ) -> BatchedNNAgentOutput:
+        return self.actor.forward(
+            obs_batch,
+            masks,
+            state,
+            is_update,
+            **kwargs
+        )
 
     @abstractmethod
     def update_critic(self, minibatch : NNBatch, **kwargs) -> Dict[str, Any]:

@@ -191,7 +191,7 @@ class TransitionSequenceListImpl(TransitionSequence[_ObsST, _ActST], Generic[_Ob
         else:
             self._transitions.extend(steps)
 
-class TransitionSampler(Generic[_ObsST, _ActST], Iterable[EnvironmentStep[_ObsST, _ActST]], ABC):
+class TransitionSampler(Generic[_ObsST, _ActST], ABC):
     @abstractmethod
     def seed(self, seed : Optional[int] = None) -> None:
         pass
@@ -240,6 +240,10 @@ class TransitionReplayBuffer(Savable, TransitionSequence[_ObsST, _ActST], Mutabl
     def transitions_at(self, index: Union[int, slice, Sequence[int]]) -> Union[EnvironmentStep[_ObsST, _ActST], Sequence[EnvironmentStep[_ObsST, _ActST]]]:
         pass
 
+    def iter_transitions(self) -> Iterator[EnvironmentStep[_ObsST, _ActST]]:
+        for i in range(self.transition_len):
+            yield self.transitions_at(i)
+
     def __len__(self) -> int:
         return self.transition_len
 
@@ -267,6 +271,9 @@ class TransitionReplayBuffer(Savable, TransitionSequence[_ObsST, _ActST], Mutabl
         Add multiple steps to the buffer
         """
         pass
+
+    def insert(self, index: int, step : EnvironmentStep[_ObsST, _ActST]) -> None:
+        raise NotImplementedError("Insert is not supported")
 
     @abstractmethod
     def clear(self) -> None:

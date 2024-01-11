@@ -81,6 +81,18 @@ class NNAgentInputMapper(ABC, nn.Module):
     ) -> Tuple[List[Any], Dict[str, Any]]:
         ...
 
+    @abstractmethod
+    def map_net_output(
+        self,
+        output : Any,
+        masks: Optional[torch.Tensor] = None,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_seq = False,
+        is_update = False,
+        stage : AgentStage = AgentStage.ONLINE,
+    ) -> NNAgentNetworkOutput:
+        ...
+
 NNAgentActor = NNAgent
 
 class NNAgentActorImpl(NNAgent):
@@ -120,7 +132,14 @@ class NNAgentActorImpl(NNAgent):
             is_update,
             self.current_stage,
         )
-        nn_output = self.actor_network.forward(*nn_input_args, **nn_input_kwargs)
+        nn_output = self.actor_input_mapper.map_net_output(
+            self.actor_network.forward(*nn_input_args, **nn_input_kwargs),
+            masks=masks,
+            state=state,
+            is_seq=self.is_sequence_model,
+            is_update=is_update,
+            stage=self.current_stage
+        )
         mapped_action = self.action_mapper.forward(
             nn_output,
             is_update,
@@ -221,7 +240,14 @@ class NNAgentCriticImpl(NNAgentCritic):
             is_update=is_update,
             stage=stage
         )
-        nn_output = self.critic_network.forward(*nn_input_args, **nn_input_kwargs)
+        nn_output = self.critic_input_mapper.map_net_output(
+            self.critic_network.forward(*nn_input_args, **nn_input_kwargs),
+            masks=masks,
+            state=state,
+            is_seq=self.is_sequence_model,
+            is_update=is_update,
+            stage=stage
+        )
         mapped_output = self.critic_mapper.forward(
             nn_output,
             is_update,
