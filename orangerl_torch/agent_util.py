@@ -171,6 +171,7 @@ class NNAgentCriticMapper(ABC, nn.Module):
         self, 
         nn_output : NNAgentNetworkOutput, 
         is_update : bool = False,
+        is_discrete : bool = False,
         stage : AgentStage = AgentStage.ONLINE
     ) -> BatchedNNCriticOutput:
         ...
@@ -224,6 +225,7 @@ class NNAgentCriticImpl(NNAgentCritic):
         mapped_output = self.critic_mapper.forward(
             nn_output,
             is_update,
+            self.is_discrete,
             stage
         )
         return mapped_output

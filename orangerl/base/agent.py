@@ -47,7 +47,7 @@ class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateT]
+        state : Optional[_StateT] = None
     ) -> AgentOutput[_ActT, _StateT, _LogProbT]:
         return next(iter(self.get_action_batch([observation], None))) if state is None else next(iter(self.get_action_batch([observation], [state])))
 
@@ -79,7 +79,7 @@ class Agent(Generic[_ObsT, _ActT, _StateT, _LogProbT], Savable, ABC):
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateT]]]
+        states : Optional[Iterable[Optional[_StateT]]] = None
     ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
         pass
 
@@ -139,7 +139,7 @@ class AgentWrapper(Generic[_ObsT, _ActT, _StateT, _LogProbT], Agent[_ObsT, _ActT
     def get_action(
         self, 
         observation : _ObsT, 
-        state : Optional[_StateT]
+        state : Optional[_StateT] = None
     ) -> AgentOutput[_ActT, _StateT, _LogProbT]:
         return Agent.get_action(self, observation, state)
     
@@ -152,7 +152,7 @@ class AgentWrapper(Generic[_ObsT, _ActT, _StateT, _LogProbT], Agent[_ObsT, _ActT
     def get_action_batch(
         self, 
         observations : Iterable[_ObsT], 
-        states : Optional[Iterable[Optional[_StateT]]]
+        states : Optional[Iterable[Optional[_StateT]]] = None
     ) -> Iterable[AgentOutput[_ActT, _StateT, _LogProbT]]:
         return self._agent.get_action_batch(observations, states)
 

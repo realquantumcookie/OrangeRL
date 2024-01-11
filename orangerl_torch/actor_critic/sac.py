@@ -25,6 +25,7 @@ class SACLearnerAgent(NNActorCriticAgent):
         replay_buffer : NNReplayBuffer,
         target_entropy : Optional[float] = None,
         temperature_alpha : Optional[float] = None,
+        temperature_alpha_lr : float = 1e-3,
         utd_ratio: int = 1,
         actor_delay : int = 1,
         decay_factor: float = 0.99, # This param is used to decay the rewards
@@ -62,6 +63,7 @@ class SACLearnerAgent(NNActorCriticAgent):
         else:
             self.temperature_alpha = nn.Parameter(torch.zeros(1), requires_grad=True)
         self.target_entropy = target_entropy
+        self.temperature_alpha_optimizer = torch.optim.SGD([self.temperature_alpha], lr=temperature_alpha_lr)
 
         # Create the target critic
         self.target_critic = copy.deepcopy(self.critic)
@@ -222,11 +224,9 @@ class SACLearnerAgent(NNActorCriticAgent):
         if self.target_entropy is not None:
             # Negative Log Probability is the actor entropy
             temperature_alpha_loss = (self.temperature_alpha * (- log_probs - self.target_entropy).detach()).mean()
-            self.actor_optimizer.zero_grad()
+            self.temperature_alpha_optimizer.zero_grad()
             temperature_alpha_loss.backward()
-            self.actor_optimizer.step()
-            if self.actor_lr_scheduler is not None:
-                self.actor_lr_scheduler.step()
+            self.temperature_alpha_optimizer.step()
 
     def _sync_target_critic(self) -> None:
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
