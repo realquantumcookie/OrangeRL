@@ -67,15 +67,15 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         if nn_output.is_seq:
             action_space_mean = action_space_mean.unsqueeze(1)
             action_space_span = action_space_span.unsqueeze(1)
-            means_output = means_output.reshape(means_output.shape[0], means_output.shape[1], -1)
-            log_stds_output = log_stds_output.reshape(log_stds_output.shape[0], log_stds_output.shape[1], -1)
+            means_output = means_output.flatten(start_dim=2)
+            log_stds_output = log_stds_output.flatten(start_dim=2)
         else:
-            means_output = means_output.reshape(means_output.shape[0], -1)
-            log_stds_output = log_stds_output.reshape(log_stds_output.shape[0], -1)
+            means_output = means_output.flatten(start_dim=1)
+            log_stds_output = log_stds_output.flatten(start_dim=1)
         
         transforms = [
-            torch.distributions.transforms.TanhTransform(),
-            torch.distributions.transforms.AffineTransform(loc = action_space_mean, scale = action_space_span)
+            torch.distributions.transforms.TanhTransform(cache_size=1),
+            torch.distributions.transforms.AffineTransform(loc = action_space_mean.detach(), scale = action_space_span.detach())
         ]
         dist = torch.distributions.Normal(means_output, torch.exp(log_stds_output))
         transformed_dist = torch.distributions.TransformedDistribution(dist, transforms)
@@ -95,8 +95,9 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
             action = action.reshape(action.shape[0], -1)
         
         log_prob : torch.Tensor = dist.log_prob(action)
-        sum_dims = list(range(2, log_prob.ndim)) if nn_output.is_seq else list(range(1, log_prob.ndim))
-        log_prob = torch.sum(log_prob, dim=sum_dims)
+        # sum_dims = list(range(2, log_prob.ndim)) if nn_output.is_seq else list(range(1, log_prob.ndim))
+        # log_prob = torch.sum(log_prob, dim=sum_dims)
+        log_prob = torch.sum(log_prob, dim=-1)
         return log_prob
 
     def forward(
@@ -111,7 +112,7 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
             stage
         )
 
-        if stage != AgentStage.EVAL:
+        if stage != AgentStage.EVAL or is_update:
             actions : torch.Tensor = dist.rsample()
             log_probs = __class__.log_prob_distribution(
                 nn_output,

@@ -293,10 +293,10 @@ class NNReplayBuffer(TransitionReplayBuffer[torch.Tensor, torch.Tensor, NNBatch]
             A tuple containing this batch and info if return_info flag is set to True.
         """
         if self._prefetch_num is None:
-            ret = self._sample(device, **kwargs)
+            ret = self._sample(**kwargs)
         else:
             if len(self._prefetch_queue) == 0:
-                ret = self._sample(device, **kwargs)
+                ret = self._sample(**kwargs)
             else:
                 with self._futures_lock:
                     ret = self._prefetch_queue.popleft().result()

@@ -199,6 +199,7 @@ class SACLearnerAgent(NNActorCriticAgent):
         else:
             q_values = critic_output.critic_estimates
             log_probs = actor_output.log_probs
+        
         actor_loss = (self.temperature_alpha.detach() * log_probs - q_values).mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -209,10 +210,17 @@ class SACLearnerAgent(NNActorCriticAgent):
         # Update Temperature Alpha
         if self.target_entropy is not None:
             # Negative Log Probability is the actor entropy
-            temperature_alpha_loss = (self.temperature_alpha * (- log_probs - self.target_entropy).detach()).mean()
+            actor_average_entropy = - log_probs.mean()
+            temperature_alpha_loss = (self.temperature_alpha * (actor_average_entropy - self.target_entropy).detach()).mean()
             self.temperature_alpha_optimizer.zero_grad()
             temperature_alpha_loss.backward()
-            self.temperature_alpha_optimizer.step()
+            # self.temperature_alpha_optimizer.step()
+        
+        return {
+            "actor_loss": actor_loss.item(),
+            "temperature_alpha": self.temperature_alpha.item(),
+            "entropy": actor_average_entropy.item(),
+        }
 
     def _sync_target_critic(self) -> None:
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):

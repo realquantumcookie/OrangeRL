@@ -214,7 +214,7 @@ class NNAgentCriticImpl(NNAgentCritic):
         self._is_discrete = is_discrete
 
     @property
-    def is_decrete(self) -> bool:
+    def is_discrete(self) -> bool:
         return self._is_discrete
 
     @property

@@ -146,7 +146,7 @@ class NNAgent(Agent[
         transition : Union[
             Iterable[EnvironmentStep[Tensor_Or_TensorDict_Or_Numpy_Or_Dict, Tensor_Or_TensorDict_Or_Numpy_Or_Dict]], 
             EnvironmentStep[Tensor_Or_TensorDict_Or_Numpy_Or_Dict, Tensor_Or_TensorDict_Or_Numpy_Or_Dict]
-        ]
+        ],
     ) -> None:
         if isinstance(transition, NNBatch):
             to_observe = transition
@@ -154,6 +154,10 @@ class NNAgent(Agent[
             to_observe = nnbatch_from_transitions([transition], save_info=self.observe_transition_infos)
         else:
             to_observe = nnbatch_from_transitions(transition, save_info=self.observe_transition_infos)
+        
+        dtype = next(self.parameters()).dtype
+        to_observe = to_observe.to(dtype=dtype)
+
         self._observe_transitions(to_observe)
 
     @abstractmethod

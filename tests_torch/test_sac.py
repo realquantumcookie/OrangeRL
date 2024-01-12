@@ -104,6 +104,7 @@ def evaluate_training_performance(
     env: gym.Env,
     agent: SACLearnerAgent,
     steps : int,
+    warmup_steps : int,
     eval_episodes : int,
 ) -> float:
     agent.current_stage = AgentStage.ONLINE
@@ -122,6 +123,10 @@ def evaluate_training_performance(
             info = info
         )
         agent.observe_transitions(transition)
+        
+        if i > warmup_steps:
+            agent.update()
+        
         observation = next_observation
         if done:
             observation, info = env.reset()
@@ -141,6 +146,7 @@ def test_ant_env():
         env,
         agent,
         steps=100_000,
+        warmup_steps=5000,
         eval_episodes=10
     )
     assert final_performance > 1000.0
