@@ -23,26 +23,17 @@ from orangerl import AgentStage
 from orangerl_torch import NNAgent, NNAgentActionMapper, BatchedNNAgentOutput, NNAgentNetworkOutput
 
 class NNAgentTanhActionMapper(NNAgentActionMapper):
-    def __init__(self, action_space: gym.spaces.Box) -> None:
-        assert isinstance(action_space, gym.spaces.Box), "Action space must be a Box"
-        assert np.all(np.isfinite(action_space.low)) and np.all(np.isfinite(action_space.high)), "Action space must be bounded"
+    def __init__(self, action_min : torch.Tensor, action_max : torch.Tensor) -> None:
+        assert torch.all(torch.isfinite(action_min)) and torch.all(torch.isfinite(action_max)), "Action space must be bounded"
+        assert torch.all(action_min <= action_max), "Action space must be bounded"
+        assert action_min.shape == action_max.shape, "Action space must share the same shape"
+        assert action_min.ndim == 1, "Action space must be 1D"
+
         super().__init__()
-        self.action_space = action_space
-    
-    @property
-    def action_space(self) -> gym.spaces.Box:
-        return self._action_space
-    
-    @action_space.setter
-    def action_space(self, action_space: gym.spaces.Box) -> None:
-        assert isinstance(action_space, gym.spaces.Box), "Action space must be a Box"
-        assert np.all(np.isfinite(action_space.low)) and np.all(np.isfinite(action_space.high)), "Action space must be bounded"
-        assert action_space.dtype == np.float32 or action_space.dtype == np.float64, "Action space must be float"
-        self._action_space = action_space
-        action_space_mean = (action_space.high + action_space.low) / 2
-        action_space_span = (action_space.high - action_space.low) / 2
-        self._action_space_mean = torch.from_numpy(action_space_mean)
-        self._action_space_span = torch.from_numpy(action_space_span)
+        self.action_min = action_min
+        self.action_max = action_max
+        self.__eps = np.finfo(np.float32).eps.item()
+        self.tanh_transform = torch.distributions.transforms.TanhTransform(cache_size=1)
 
     def forward_distribution(
         self,
@@ -50,55 +41,31 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         stage : AgentStage = AgentStage.ONLINE
     ):
         if isinstance(nn_output.output, torch.Tensor):
-            assert nn_output.output.shape[-1] == 2, "The last dimension of the output must be 2"
-            means_output = nn_output.output[...,0]
-            log_stds_output = nn_output.output[...,1]
+            if nn_output.is_seq:
+                nn_output_flattened = nn_output.output.flatten(start_dim=2)
+                action_size = nn_output_flattened.shape[-1] // 2
+                means_output = nn_output_flattened[:, :, :action_size]
+                log_stds_output = nn_output_flattened[:, :, action_size:]
+            else:
+                nn_output_flattened = nn_output.output.flatten(start_dim=1)
+                action_size = nn_output_flattened.shape[-1] // 2
+                means_output = nn_output_flattened[:, :action_size]
+                log_stds_output = nn_output_flattened[:, action_size:]
         else:
             output_keys = nn_output.output.keys()
             assert 'loc' in output_keys and 'log_scale' in output_keys, "The output must have keys 'loc' and 'log_scale'"
             means_output = nn_output.output['loc']
             log_stds_output = nn_output.output['log_scale']
+            if nn_output.is_seq:
+                means_output = means_output.flatten(start_dim=2)
+                log_stds_output = log_stds_output.flatten(start_dim=2)
+            else:
+                means_output = means_output.flatten(start_dim=1)
+                log_stds_output = log_stds_output.flatten(start_dim=1)
+            action_size = means_output.shape[-1]
         
-        
-        action_space_mean = self._action_space_mean.to(means_output.device)
-        action_space_span = self._action_space_span.to(means_output.device)
-        action_space_mean = action_space_mean.unsqueeze(0)
-        action_space_span = action_space_span.unsqueeze(0)
-        if nn_output.is_seq:
-            action_space_mean = action_space_mean.unsqueeze(1)
-            action_space_span = action_space_span.unsqueeze(1)
-            means_output = means_output.flatten(start_dim=2)
-            log_stds_output = log_stds_output.flatten(start_dim=2)
-        else:
-            means_output = means_output.flatten(start_dim=1)
-            log_stds_output = log_stds_output.flatten(start_dim=1)
-        
-        transforms = [
-            torch.distributions.transforms.TanhTransform(cache_size=1),
-            torch.distributions.transforms.AffineTransform(loc = action_space_mean.detach(), scale = action_space_span.detach())
-        ]
         dist = torch.distributions.Normal(means_output, torch.exp(log_stds_output))
-        transformed_dist = torch.distributions.TransformedDistribution(dist, transforms)
-        return dist, transformed_dist
-
-    @staticmethod
-    def log_prob_distribution(
-        nn_output : NNAgentNetworkOutput,
-        base_dist: torch.distributions.Normal,
-        dist: torch.distributions.TransformedDistribution,
-        action: torch.Tensor,
-        stage: AgentStage = AgentStage.ONLINE
-    ) -> torch.Tensor:
-        if nn_output.is_seq:
-            action = action.reshape(action.shape[0], action.shape[1], -1)
-        else:
-            action = action.reshape(action.shape[0], -1)
-        
-        log_prob : torch.Tensor = dist.log_prob(action)
-        # sum_dims = list(range(2, log_prob.ndim)) if nn_output.is_seq else list(range(1, log_prob.ndim))
-        # log_prob = torch.sum(log_prob, dim=sum_dims)
-        log_prob = torch.sum(log_prob, dim=-1)
-        return log_prob
+        return dist
 
     def forward(
         self, 
@@ -107,30 +74,34 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         stage : AgentStage = AgentStage.ONLINE
     ) -> BatchedNNAgentOutput:
         
-        base_dist, dist = self.forward_distribution(
+        base_dist = self.forward_distribution(
             nn_output, 
             stage
         )
 
+        action_min = self.action_min.to(nn_output.output.device)
+        action_max = self.action_max.to(nn_output.output.device)
         if stage != AgentStage.EVAL or is_update:
-            actions : torch.Tensor = dist.rsample()
-            log_probs = __class__.log_prob_distribution(
-                nn_output,
-                base_dist,
-                dist,
-                actions,
-                stage
-            )
+            raw_actions : torch.Tensor = base_dist.rsample()
         else:
-            actions : torch.Tensor = base_dist.mean
-            for transform in dist.transforms:
-                actions = transform(actions)
-            log_probs = torch.zeros(actions.shape[:2] if nn_output.is_seq else actions.shape[:1], dtype=actions.dtype, device=actions.device)
+            raw_actions : torch.Tensor = base_dist.mean
+        
+        squashed_actions : torch.Tensor = self.tanh_transform(raw_actions)
+        
+        # apply correction for Tanh squashing when computing logprob from Gaussian
+        # You can check out the original SAC paper (arXiv 1801.01290): Eq 21.
+        # in appendix C to get some understanding of this equation.
+        # Taken from Tianshou's source code https://github.com/thu-ml/tianshou/blob/master/tianshou/policy/modelfree/sac.py
+        log_probs = base_dist.log_prob(raw_actions).sum(-1) - torch.log(1 - squashed_actions.pow(2) + self.__eps).sum(
+            -1
+        )
+        
+        actions = action_min + (action_max - action_min) * (squashed_actions + 1) / 2
 
         if nn_output.is_seq:
-            actions = actions.reshape(actions.shape[0], actions.shape[1], *self._action_space_mean.shape)
+            actions = actions.reshape(actions.shape[0], actions.shape[1], -1)
         else:
-            actions = actions.reshape(actions.shape[0], *self._action_space_mean.shape)
+            actions = actions.reshape(actions.shape[0], -1)
         
         return BatchedNNAgentOutput(
             actions = actions,
@@ -147,14 +118,14 @@ class NNAgentTanhActionMapper(NNAgentActionMapper):
         is_update : bool = False,
         stage: AgentStage = AgentStage.ONLINE
     ) -> torch.Tensor:
-        base_dist, dist = self.forward_distribution(
+        base_dist = self.forward_distribution(
             nn_output, 
             stage
         )
-        return __class__.log_prob_distribution(
-            nn_output,
-            base_dist,
-            dist,
-            actions,
-            stage
+        actions = actions.flatten(start_dim=1) if not nn_output.is_seq else actions.flatten(start_dim=2)
+        squashed_actions = (2 * (actions - self.action_min) / (self.action_max - self.action_min)) - 1
+        raw_actions = self.tanh_transform.inv(squashed_actions)
+        log_probs = base_dist.log_prob(raw_actions).sum(-1) - torch.log(1 - squashed_actions.pow(2) + self.__eps).sum(
+            -1
         )
+        return log_probs

@@ -138,22 +138,22 @@ class SACLearnerAgent(NNActorCriticAgent):
                 next_critic_output,
                 dim=1,
                 index=gather_mask
-            ).squeeze(1)
+            ).flatten()
             current_q_values : torch.Tensor = torch.gather(
                 critic_output,
                 dim=1,
                 index=gather_mask
-            ).squeeze(1)
+            ).flatten()
             current_rewards : torch.Tensor = torch.gather(
                 minibatch.rewards,
                 dim=1,
                 index=gather_mask
-            ).squeeze(1)
+            ).flatten()
             
         else:
-            current_q_values = critic_output.critic_estimates
-            next_q_values = next_critic_output.critic_estimates
-            current_rewards = minibatch.rewards
+            current_q_values = critic_output.critic_estimates.flatten()
+            next_q_values = next_critic_output.critic_estimates.flatten()
+            current_rewards = minibatch.rewards.flatten()
         target_q_values = current_rewards + self.decay_factor * next_q_values
         critic_loss = nn.functional.mse_loss(current_q_values, target_q_values)
         self.critic_optimizer.zero_grad()
@@ -190,15 +190,15 @@ class SACLearnerAgent(NNActorCriticAgent):
                 critic_output.critic_estimates,
                 dim=1,
                 index=gather_mask
-            ).squeeze(1)
+            ).flatten()
             log_probs = torch.gather(
                 actor_output.log_probs,
                 dim=1,
                 index=gather_mask
-            )
+            ).flatten()
         else:
-            q_values = critic_output.critic_estimates
-            log_probs = actor_output.log_probs
+            q_values = critic_output.critic_estimates.flatten()
+            log_probs = actor_output.log_probs.flatten()
         
         actor_loss = (self.temperature_alpha.detach() * log_probs - q_values).mean()
         self.actor_optimizer.zero_grad()
@@ -214,7 +214,7 @@ class SACLearnerAgent(NNActorCriticAgent):
             temperature_alpha_loss = (self.temperature_alpha * (actor_average_entropy - self.target_entropy).detach()).mean()
             self.temperature_alpha_optimizer.zero_grad()
             temperature_alpha_loss.backward()
-            # self.temperature_alpha_optimizer.step()
+            self.temperature_alpha_optimizer.step()
         
         return {
             "actor_loss": actor_loss.item(),

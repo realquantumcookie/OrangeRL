@@ -35,9 +35,6 @@ def initialize_sac_agent(
         use_layer_norm=use_layer_norm,
         dropout_rate=dropout_rate
     )
-    actor_net.append(ReshapeNNLayer(
-        shape=torch.Size([output_dim, 2])
-    ))
     critic_net = MLP(
         input_dim=input_dim + output_dim,
         output_dim=1,
@@ -51,7 +48,10 @@ def initialize_sac_agent(
     actor = NNAgentActorImpl(
         actor_input_mapper=input_mapper,
         actor_network=actor_net,
-        action_mapper=NNAgentTanhActionMapper(env.action_space),
+        action_mapper=NNAgentTanhActionMapper(
+            action_min=torch.tensor(env.action_space.low, dtype=torch.float32),
+            action_max=torch.tensor(env.action_space.high, dtype=torch.float32)
+        ),
         is_sequence_model=False,
         empty_state=None
     )
