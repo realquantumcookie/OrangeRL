@@ -65,15 +65,16 @@ def initialize_sac_agent(
     )
     sac_agent = SACLearnerAgent(
         actor=actor,
-        actor_optimizer=torch.optim.Adam(actor_net.parameters(), lr=1e-3),
+        actor_optimizer=torch.optim.Adam(actor_net.parameters(), lr=3e-4),
         actor_lr_scheduler=None,
         critic=critic,
-        critic_optimizer=torch.optim.Adam(critic_net.parameters(), lr=1e-3),
+        critic_optimizer=torch.optim.Adam(critic_net.parameters(), lr=3e-4),
         critic_lr_scheduler=None,
         replay_buffer=NNReplayBuffer(
-            storage=LazyTensorStorage(max_size=10_000_000, device="cpu")
+            storage=LazyTensorStorage(max_size=1_000_000, device="cpu")
         ),
-        target_entropy=-output_dim/2,
+        target_entropy=float(-output_dim),
+        temperature_alpha_lr=3e-4,
         utd_ratio=1,
         actor_delay=1,
         decay_factor=decay_factor
@@ -138,14 +139,14 @@ def test_ant_env():
     agent = initialize_sac_agent(
         env,
         hidden_dims=[256, 256],
-        use_layer_norm=True,
-        dropout_rate=0.1,
+        use_layer_norm=False,
+        dropout_rate=0.0,
         device=test_device
     )
     final_performance = evaluate_training_performance(
         env,
         agent,
-        steps=100_000,
+        steps=500_000,
         warmup_steps=5000,
         eval_episodes=10
     )
