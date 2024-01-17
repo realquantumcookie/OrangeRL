@@ -10,6 +10,7 @@ import numpy as np
 import gymnasium as gym
 import pytest
 from typing import List, Callable, Optional, Union
+import tqdm
 
 test_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Test device: ", test_device)
@@ -108,9 +109,11 @@ def evaluate_training_performance(
     warmup_steps : int,
     eval_episodes : int,
 ) -> float:
+    env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=0)
     agent.current_stage = AgentStage.ONLINE
     observation, info = env.reset()
-    for i in range(steps):
+
+    for i in tqdm.trange(steps):
         action = agent.get_action(observation, state = None).action.detach().cpu().numpy()
         next_observation, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
@@ -130,7 +133,9 @@ def evaluate_training_performance(
         
         observation = next_observation
         if done:
+            print("Episode return: ", info["episode"]['r'])
             observation, info = env.reset()
+
     final_performance = eval_agent(env, agent, eval_episodes)
     return final_performance
 

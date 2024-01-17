@@ -2,7 +2,7 @@ from orangerl import AgentStage, EnvironmentStep
 from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNBatch, NNReplayBuffer, NNAgentActor, NNAgentCritic, BatchedNNAgentOutput, BatchedNNCriticOutput
 from orangerl_torch.action_mappers.tanh_bound import NNAgentTanhActionMapper
 from .base import NNActorCriticAgent
-from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable
+from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable, Type
 import gymnasium as gym
 import torch
 import torch.nn as nn
@@ -25,7 +25,7 @@ class SACLearnerAgent(NNActorCriticAgent):
         replay_buffer : NNReplayBuffer,
         target_entropy : Optional[float] = None,
         temperature_alpha : Optional[float] = None,
-        temperature_alpha_optim_cls : type[torch.optim.Optimizer] = torch.optim.Adam,
+        temperature_alpha_optim_cls : Type[torch.optim.Optimizer] = torch.optim.Adam,
         temperature_alpha_lr : float = 1e-3,
         temperature_alpha_kwargs : Dict[str, Any] = {},
         utd_ratio: int = 1,
@@ -137,12 +137,12 @@ class SACLearnerAgent(NNActorCriticAgent):
             fetch_idx = torch.sum(minibatch.masks.to(torch.bool), dim=-1) - 1
             gather_mask = fetch_idx.unsqueeze(1)
             next_q_values : torch.Tensor = torch.gather(
-                next_critic_output,
+                next_critic_output.critic_estimates,
                 dim=1,
                 index=gather_mask
             ).flatten()
             current_q_values : torch.Tensor = torch.gather(
-                critic_output,
+                critic_output.critic_estimates,
                 dim=1,
                 index=gather_mask
             ).flatten()
@@ -151,12 +151,19 @@ class SACLearnerAgent(NNActorCriticAgent):
                 dim=1,
                 index=gather_mask
             ).flatten()
+            current_terminations : torch.Tensor = torch.gather(
+                minibatch.terminations,
+                dim=1,
+                index=gather_mask
+            ).float().flatten()
             
         else:
             current_q_values = critic_output.critic_estimates.flatten()
             next_q_values = next_critic_output.critic_estimates.flatten()
             current_rewards = minibatch.rewards.flatten()
-        target_q_values = current_rewards + self.decay_factor * next_q_values
+            current_terminations = minibatch.terminations.float().flatten()
+
+        target_q_values = current_rewards + self.decay_factor * (1.0 - current_terminations) * next_q_values
         critic_loss = nn.functional.mse_loss(current_q_values, target_q_values)
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
