@@ -159,7 +159,7 @@ class NNAgentActorImpl(NNAgent):
 @dataclass
 class BatchedNNCriticOutput:
     critic_estimates : torch.Tensor # (B,[S],[A]) where S and A are only present if is_seq and is_discrete, respectively
-    distributions : Optional[torch.distributions.Distribution] # (B, [S], [A])
+    distributions : Optional[torch.distributions.Distribution] # batch_size: (B, [S]) event_size: ([A],)
     log_stds : Optional[torch.Tensor] # (B, [S], [A])
     final_states: Optional[Tensor_Or_TensorDict] = None # (B, S) if is_seq, otherwise None
     masks: Optional[torch.Tensor] = None # (B, [S])
@@ -182,6 +182,20 @@ class NNAgentCritic(ABC, nn.Module):
         stage : AgentStage = AgentStage.ONLINE,
         **kwargs: Any,
     ) -> BatchedNNCriticOutput:
+        ...
+
+class NNAgentCriticEnsemble(NNAgentCritic):
+    @abstractmethod
+    def forward_all(
+        self,
+        obs_batch: Tensor_Or_TensorDict,
+        act_batch: Optional[Tensor_Or_TensorDict],
+        masks: Optional[torch.Tensor] = None,
+        state: Optional[Tensor_Or_TensorDict] = None,
+        is_update = False,
+        stage : AgentStage = AgentStage.ONLINE,
+        **kwargs: Any,
+    ) -> List[BatchedNNCriticOutput]:
         ...
 
 class NNAgentCriticMapper(ABC, nn.Module):
