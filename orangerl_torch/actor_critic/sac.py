@@ -1,5 +1,5 @@
 from orangerl import AgentStage, EnvironmentStep
-from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNBatch, NNReplayBuffer, NNAgentActor, NNAgentCritic, BatchedNNAgentOutput, BatchedNNCriticOutput, NNAgentCriticEnsemble
+from orangerl_torch import Tensor_Or_Numpy, Tensor_Or_TensorDict, NNAgent, NNBatch, NNReplayBuffer, NNAgentActor, NNAgentCritic, BatchedNNAgentOutput, BatchedNNCriticOutput
 from .base import NNActorCriticAgent
 from typing import Any, Iterator, Optional, Union, Iterable, Tuple, Dict, Generic, TypeVar, Callable, Type, List
 import gymnasium as gym
@@ -112,24 +112,13 @@ class SACLearnerAgent(NNActorCriticAgent):
         }
     
     def update_critic(self, minibatch : NNBatch, **kwargs) -> Dict[str, Any]:
-        is_critic_ensemble = isinstance(self.critic, NNAgentCriticEnsemble)
-        if not is_critic_ensemble:
-            critic_output = self.critic.forward(
-                obs_batch=minibatch.observations,
-                act_batch=minibatch.actions,
-                masks=minibatch.masks,
-                state=None,
-                is_update=True
-            )
-        else:
-            critic_outputs : List[BatchedNNCriticOutput] = self.critic.forward_all(
-                obs_batch=minibatch.observations,
-                act_batch=minibatch.actions,
-                masks=minibatch.masks,
-                state=None,
-                is_update=True
-            )
-        
+        critic_output_ensemble : List[BatchedNNCriticOutput] = self.critic.forward_all(
+            obs_batch=minibatch.observations,
+            act_batch=minibatch.actions,
+            masks=minibatch.masks,
+            state=None,
+            is_update=True
+        )
         actor_output = self.actor.forward(
             obs_batch=minibatch.next_observations,
             masks=minibatch.masks,
@@ -143,6 +132,7 @@ class SACLearnerAgent(NNActorCriticAgent):
             state=None,
             is_update=True
         )
+
         if self.is_sequence_model:
             fetch_idx = torch.sum(minibatch.masks.to(torch.bool), dim=-1) - 1
             gather_mask = fetch_idx.unsqueeze(1)
@@ -151,22 +141,15 @@ class SACLearnerAgent(NNActorCriticAgent):
                 dim=1,
                 index=gather_mask
             ).flatten()
-
-            if is_critic_ensemble:
-                current_q_values = torch.stack([
-                    torch.gather(
-                        critic_outputs[i].critic_estimates,
-                        dim=1,
-                        index=gather_mask
-                    )
-                    for i in range(len(critic_outputs))
-                ], dim=0).flatten(start_dim=1)
-            else:
-                current_q_values : torch.Tensor = torch.gather(
-                    critic_output.critic_estimates,
+            
+            current_q_values_ensemble = torch.stack([
+                torch.gather(
+                    critic_output_ensemble[i].critic_estimates,
                     dim=1,
                     index=gather_mask
-                ).flatten()
+                )
+                for i in range(len(critic_output_ensemble))
+            ], dim=0).flatten(start_dim=1)
             
             current_rewards : torch.Tensor = torch.gather(
                 minibatch.rewards,
@@ -179,22 +162,19 @@ class SACLearnerAgent(NNActorCriticAgent):
                 index=gather_mask
             ).float().flatten()
         else:
-            if is_critic_ensemble:
-                current_q_values = torch.stack([
-                    critic_outputs[i].critic_estimates
-                    for i in range(len(critic_outputs))
-                ], dim=0).flatten(start_dim=1)
-            else:
-                current_q_values = critic_output.critic_estimates.flatten()
+            current_q_values_ensemble = torch.stack([
+                critic_output_ensemble[i].critic_estimates
+                for i in range(len(critic_output_ensemble))
+            ], dim=0).flatten(start_dim=1)
             
             next_q_values = next_critic_output.critic_estimates.flatten()
             current_rewards = minibatch.rewards.flatten()
             current_terminations = minibatch.terminations.float().flatten()
 
         target_q_values = current_rewards + self.decay_factor * (1.0 - current_terminations) * next_q_values
-        if is_critic_ensemble:
-            target_q_values = target_q_values.unsqueeze(0).expand(current_q_values.size())
-        critic_loss = nn.functional.mse_loss(current_q_values, target_q_values)
+        target_q_values = target_q_values.unsqueeze(0).expand(current_q_values_ensemble.size())
+
+        critic_loss = nn.functional.mse_loss(current_q_values_ensemble, target_q_values)
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
@@ -205,7 +185,7 @@ class SACLearnerAgent(NNActorCriticAgent):
 
         return {
             "critic_loss": critic_loss.item(),
-            "q": current_q_values.mean().item()
+            "q": current_q_values_ensemble.mean().item()
         }
     
     def update_actor(self, minibatch : NNBatch, **kwargs) -> Dict[str, Any]:

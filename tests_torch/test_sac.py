@@ -1,5 +1,5 @@
 from orangerl_torch.actor_critic.sac import SACLearnerAgent
-from orangerl_torch.input_mappers.mlp_mapper import MLPInputMapper
+from orangerl_torch.input_mappers.mlp_mapper import MLPNetworkAdaptor
 from orangerl_torch.critic_mappers.direct_mapper import NNDirectCriticMapper
 from orangerl_torch.action_mappers.tanh_bound import NNAgentTanhActionMapper
 from orangerl_torch import *
@@ -45,10 +45,10 @@ def initialize_sac_agent(
         use_layer_norm=use_layer_norm,
         dropout_rate=dropout_rate
     )
-    input_mapper = MLPInputMapper()
+    network_adaptor = MLPNetworkAdaptor()
     actor = NNAgentActorImpl(
-        actor_input_mapper=input_mapper,
         actor_network=actor_net,
+        actor_network_adaptor=network_adaptor,
         action_mapper=NNAgentTanhActionMapper(
             action_min=torch.tensor(env.action_space.low, dtype=torch.float32),
             action_max=torch.tensor(env.action_space.high, dtype=torch.float32)
@@ -57,8 +57,8 @@ def initialize_sac_agent(
         empty_state=None
     )
     critic = NNAgentCriticImpl(
-        critic_input_mapper=input_mapper,
         critic_network=critic_net,
+        critic_network_adaptor=network_adaptor,
         critic_mapper=NNDirectCriticMapper(),
         is_sequence_model=False,
         empty_state=None,
@@ -112,6 +112,7 @@ def evaluate_training_performance(
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=0)
     agent.current_stage = AgentStage.ONLINE
     observation, info = env.reset()
+    update_info = None
 
     for i in tqdm.trange(steps):
         action = agent.get_action(observation, state = None).action.detach().cpu().numpy()
@@ -129,11 +130,12 @@ def evaluate_training_performance(
         agent.observe_transitions(transition)
         
         if i > warmup_steps:
-            agent.update()
+            update_info = agent.update()
         
         observation = next_observation
         if done:
             print("Episode return: ", info["episode"]['r'])
+            print("Update Info", update_info)
             observation, info = env.reset()
 
     final_performance = eval_agent(env, agent, eval_episodes)

@@ -1,5 +1,5 @@
 from .agent import Tensor_Or_TensorDict
-from .agent_util import NNAgentCritic, NNAgentInputMapper, NNAgentCriticMapper, BatchedNNCriticOutput, NNAgentNetworkOutput
+from .agent_util import NNAgentCritic, NNAgentNetworkAdaptor, NNAgentCriticMapper, BatchedNNCriticOutput, NNAgentNetworkOutput
 from orangerl import AgentStage
 import torch
 import torch.nn as nn
@@ -8,18 +8,20 @@ from typing import Any, Optional, Type, Dict, List
 class NNAgentCriticEnsembleImpl(NNAgentCritic):
     def __init__(
         self,
-        critic_input_mapper: NNAgentInputMapper,
         critic_networks : List[nn.Module],
-        is_sequence_model : bool,
+        critic_network_adaptor: NNAgentNetworkAdaptor,
+        is_seq : bool,
         empty_state : Optional[Tensor_Or_TensorDict],
         num_subsample : int = -1,
         subsample_aggregate_method : str = "min", # "min", "max", "mean"
         is_discrete : bool = False,
     ):
+        assert empty_state is not None or not is_seq, "empty_state must be provided for sequence models"
+        assert is_seq == critic_network_adaptor.is_seq, "is_seq must match critic_network_adaptor.is_seq"
         NNAgentCritic.__init__(self)
-        self.critic_input_mapper = critic_input_mapper
         self._critic_networks = critic_networks
-        self._is_sequence_model = is_sequence_model
+        self.critic_network_adaptor = critic_network_adaptor
+        self._is_seq = is_seq
         self.empty_state = empty_state
         self._is_discrete = is_discrete
         self._critic_params, self._critic_buffers = torch.func.stack_module_state(
@@ -33,15 +35,15 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
         self.subsample_aggregate_method = subsample_aggregate_method
 
     def _wrapper_call(self, params, buffers, args, kwargs):
-        return torch.func.functional_call(self._critic_networks[0], (params, buffers), *args, **kwargs)
+        return torch.func.functional_call(self._critic_networks[0], (params, buffers), args, kwargs)
 
     @property
     def is_discrete(self) -> bool:
         return self._is_discrete
 
     @property
-    def is_sequence_model(self) -> bool:
-        return self._is_sequence_model
+    def is_seq(self) -> bool:
+        return self._is_seq
 
     def forward(
         self,
@@ -53,12 +55,11 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
         stage : AgentStage = AgentStage.ONLINE,
         **kwargs: Any,
     ) -> BatchedNNCriticOutput:
-        nn_input_args, nn_input_kwargs = self.critic_input_mapper.forward(
+        nn_input_args, nn_input_kwargs = self.critic_network_adaptor.forward(
             obs_batch,
             act_batch,
             masks,
             state,
-            is_seq=self.is_sequence_model,
             is_update=is_update,
             stage=stage
         )
@@ -72,11 +73,10 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
             nn_input_kwargs
         )
         network_outputs = [
-            self.critic_input_mapper.map_net_output(
+            self.critic_network_adaptor.map_net_output(
                 network_raw_outputs[i],
                 masks=masks,
                 state=state,
-                is_seq=self.is_sequence_model,
                 is_update=is_update,
                 stage=stage
             )
@@ -87,7 +87,7 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
             for i in range(ensemble_len)
         ], dim=0) # (ensemble_len, B, [S])
 
-        if self.is_sequence_model:
+        if self.is_seq:
             network_output = network_output.flatten(start_dim=2) # (ensemble_len, B, S)
         else:
             network_output = network_output.flatten(start_dim=1) # (ensemble_len, B)
@@ -109,7 +109,7 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
             log_stds=torch.log(mapped_std),
             final_states=None,
             masks=masks,
-            is_seq=self.is_sequence_model,
+            is_seq=self.is_seq,
             is_discrete=self.is_discrete,
         )
 
@@ -124,12 +124,11 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
         **kwargs: Any,
     ) -> List[BatchedNNCriticOutput]:
         ensemble_len = len(self._critic_networks)
-        nn_input_args, nn_input_kwargs = self.critic_input_mapper.forward(
+        nn_input_args, nn_input_kwargs = self.critic_network_adaptor.forward(
             obs_batch,
             act_batch,
             masks,
             state,
-            is_seq=self.is_sequence_model,
             is_update=is_update,
             stage=stage
         )
@@ -140,11 +139,10 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
             nn_input_kwargs
         )
         network_outputs = [
-            self.critic_input_mapper.map_net_output(
+            self.critic_network_adaptor.map_net_output(
                 network_raw_outputs[i],
                 masks=masks,
                 state=state,
-                is_seq=self.is_sequence_model,
                 is_update=is_update,
                 stage=stage
             )
@@ -162,7 +160,7 @@ class NNAgentCriticEnsembleImpl(NNAgentCritic):
                 log_stds=None,
                 final_states=None,
                 masks=masks,
-                is_seq=self.is_sequence_model,
+                is_seq=self.is_seq,
                 is_discrete=self.is_discrete
             )
             for i in range(ensemble_len)

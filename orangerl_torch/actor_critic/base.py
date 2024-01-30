@@ -16,6 +16,20 @@ class NNActorCriticAgent(NNAgent, ABC):
     utd_ratio : int = 1
     actor_delay : int = 1
 
+    @property
+    def current_stage(self) -> AgentStage:
+        return self._current_stage
+    
+    @current_stage.setter
+    def current_stage(self, stage : AgentStage) -> None:
+        if stage == AgentStage.EVAL:
+            self.train(False)
+        else:
+            self.train(True)
+        
+        self._current_stage = stage
+        self.actor.current_stage = stage
+
     def forward(
         self,
         obs_batch: Tensor_Or_TensorDict,

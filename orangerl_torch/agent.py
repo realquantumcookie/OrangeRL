@@ -134,9 +134,12 @@ class NNAgent(Agent[
         Forward pass of the agent. 
         @param obs_batch: batch of observations, 
             shape (B, *obs_shape) or (B, S, *obs_shape).
+        @param masks: masks for sequence models, 
+            shape (B, S) if self.is_sequence_model is True, None otherwise.
         @param state: state of the agent. 
-            For sequence models, this is (B, *state_shape) for the initial state of each sequence. 
-        @param is_seq: whether the input is a sequence (B, S, *obs_shape) of observations.
+            For sequence models, this is (B, *state_shape) for the initial state of each sequence.
+        @param is_update: whether this forward pass is for updating the agent.
+        @param kwargs: additional arguments.
         @returns: BatchedNNAgentOutput object
         """
         ...

@@ -1,26 +1,24 @@
 from typing import Any, Dict, List, Optional, Tuple
 from orangerl import AgentStage
-from orangerl_torch import NNAgentInputMapper, Tensor_Or_TensorDict
+from orangerl_torch import NNAgentNetworkAdaptor, Tensor_Or_TensorDict
 import torch
 import torch.nn as nn
 
 from orangerl_torch.agent_util import NNAgentNetworkOutput
 
 
-class MLPInputMapper(NNAgentInputMapper):
+class MLPNetworkAdaptor(NNAgentNetworkAdaptor):
+    is_seq : bool = False
+
     def forward(
         self, 
         obs_batch: Tensor_Or_TensorDict, 
         act_batch: Optional[Tensor_Or_TensorDict], 
         masks: Optional[torch.Tensor] = None, 
         state: Optional[Tensor_Or_TensorDict] = None, 
-        is_seq=False, 
         is_update=False, 
         stage: AgentStage = AgentStage.ONLINE
     ) -> Tuple[List[Any], Dict[str, Any]]:
-        if is_seq:
-            raise NotImplementedError("MLPInputMapper does not support sequence models")
-        
         assert masks is None or masks.ndim == 1, "masks must be 1 dimensional"
         assert state is None, "MLPInputMapper does not support stateful models"
 

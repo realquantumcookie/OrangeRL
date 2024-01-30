@@ -43,6 +43,7 @@ class NNAgentActionMapper(ABC, nn.Module):
     """
     NNAgentActionMapper is a module that maps the output of a neural network to an action.
     """
+    is_seq: bool
 
     @abstractmethod
     def forward(
@@ -66,7 +67,8 @@ class NNAgentActionMapper(ABC, nn.Module):
     ) -> BatchedNNAgentOutput:
         ...
 
-class NNAgentInputMapper(ABC, nn.Module):
+class NNAgentNetworkAdaptor(ABC, nn.Module):
+    is_seq : bool
 
     @abstractmethod
     def forward(
@@ -75,7 +77,6 @@ class NNAgentInputMapper(ABC, nn.Module):
         act_batch: Optional[Tensor_Or_TensorDict], # Only used when mapping critic inputs
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False, # If True, then obs_batch is shaped (batch_size, sequence_length, *observation_shape)
         is_update = False,
         stage : AgentStage = AgentStage.ONLINE,
     ) -> Tuple[List[Any], Dict[str, Any]]:
@@ -87,7 +88,6 @@ class NNAgentInputMapper(ABC, nn.Module):
         output : Any,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False,
         is_update = False,
         stage : AgentStage = AgentStage.ONLINE,
     ) -> NNAgentNetworkOutput:
@@ -102,17 +102,18 @@ class NNAgentActorImpl(NNAgent):
 
     def __init__(
         self,
-        actor_input_mapper: NNAgentInputMapper,
         actor_network : nn.Module,
+        actor_network_adaptor: NNAgentNetworkAdaptor,
         action_mapper : NNAgentActionMapper,
         is_sequence_model : bool,
         empty_state : Optional[Tensor_Or_TensorDict],
         init_stage : AgentStage = AgentStage.ONLINE,
         decay_factor : float = 0.99,
     ):
+        assert is_sequence_model == actor_network_adaptor.is_seq, "is_sequence_model must match actor_network_adaptor.is_seq"
         NNAgent.__init__(self, is_sequence_model, empty_state, init_stage, decay_factor)
-        self.actor_input_mapper = actor_input_mapper
         self.actor_network = actor_network
+        self.actor_network_adaptor = actor_network_adaptor
         self.action_mapper = action_mapper
 
     def forward(
@@ -123,27 +124,25 @@ class NNAgentActorImpl(NNAgent):
         is_update = False,
         **kwargs: Any,
     ) -> BatchedNNAgentOutput:
-        nn_input_args, nn_input_kwargs = self.actor_input_mapper.forward(
-            obs_batch,
-            None,
-            masks,
-            state,
-            self.is_sequence_model,
-            is_update,
-            self.current_stage,
-        )
-        nn_output = self.actor_input_mapper.map_net_output(
-            self.actor_network.forward(*nn_input_args, **nn_input_kwargs),
+        nn_input_args, nn_input_kwargs = self.actor_network_adaptor.forward(
+            obs_batch=obs_batch,
+            act_batch=None,
             masks=masks,
             state=state,
-            is_seq=self.is_sequence_model,
+            is_update=is_update,
+            stage=self.current_stage,
+        )
+        nn_output = self.actor_network_adaptor.map_net_output(
+            output=self.actor_network.forward(*nn_input_args, **nn_input_kwargs),
+            masks=masks,
+            state=state,
             is_update=is_update,
             stage=self.current_stage
         )
         mapped_action = self.action_mapper.forward(
             nn_output,
-            is_update,
-            self.current_stage,
+            is_update=is_update,
+            stage=self.current_stage,
         )
         return mapped_action
 
@@ -184,8 +183,6 @@ class NNAgentCritic(ABC, nn.Module):
     ) -> BatchedNNCriticOutput:
         ...
 
-class NNAgentCriticEnsemble(NNAgentCritic):
-    @abstractmethod
     def forward_all(
         self,
         obs_batch: Tensor_Or_TensorDict,
@@ -196,7 +193,15 @@ class NNAgentCriticEnsemble(NNAgentCritic):
         stage : AgentStage = AgentStage.ONLINE,
         **kwargs: Any,
     ) -> List[BatchedNNCriticOutput]:
-        ...
+        return [self.forward(
+            obs_batch,
+            act_batch,
+            masks,
+            state,
+            is_update,
+            stage,
+            **kwargs
+        )]
 
 class NNAgentCriticMapper(ABC, nn.Module):
     @abstractmethod
@@ -212,16 +217,18 @@ class NNAgentCriticMapper(ABC, nn.Module):
 class NNAgentCriticImpl(NNAgentCritic):
     def __init__(
         self,
-        critic_input_mapper: NNAgentInputMapper,
         critic_network : nn.Module,
+        critic_network_adaptor: NNAgentNetworkAdaptor,
         critic_mapper: NNAgentCriticMapper,
         is_sequence_model : bool,
         empty_state : Optional[Tensor_Or_TensorDict],
         is_discrete : bool = False,
     ):
+        assert empty_state is not None or not is_sequence_model, "empty_state must be provided for sequence models"
+        assert is_sequence_model == critic_network_adaptor.is_seq, "is_seq must match critic_network_adaptor.is_seq"
         NNAgentCritic.__init__(self)
-        self.critic_input_mapper = critic_input_mapper
         self.critic_network = critic_network
+        self.critic_network_adaptor = critic_network_adaptor
         self.critic_mapper = critic_mapper
         self._is_sequence_model = is_sequence_model
         self.empty_state = empty_state
@@ -245,27 +252,25 @@ class NNAgentCriticImpl(NNAgentCritic):
         stage : AgentStage = AgentStage.ONLINE,
         **kwargs: Any,
     ) -> BatchedNNCriticOutput:
-        nn_input_args, nn_input_kwargs = self.critic_input_mapper.forward(
-            obs_batch,
-            act_batch,
-            masks,
-            state,
-            is_seq=self.is_sequence_model,
+        nn_input_args, nn_input_kwargs = self.critic_network_adaptor.forward(
+            obs_batch=obs_batch,
+            act_batch=act_batch,
+            masks=masks,
+            state=state,
             is_update=is_update,
             stage=stage
         )
-        nn_output = self.critic_input_mapper.map_net_output(
-            self.critic_network.forward(*nn_input_args, **nn_input_kwargs),
+        nn_output = self.critic_network_adaptor.map_net_output(
+            output=self.critic_network.forward(*nn_input_args, **nn_input_kwargs),
             masks=masks,
             state=state,
-            is_seq=self.is_sequence_model,
             is_update=is_update,
             stage=stage
         )
         mapped_output = self.critic_mapper.forward(
             nn_output,
-            is_update,
-            self.is_discrete,
-            stage
+            is_update=is_update,
+            is_discrete=self.is_discrete,
+            stage=stage
         )
         return mapped_output
