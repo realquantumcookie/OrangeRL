@@ -1,5 +1,5 @@
 from orangerl_torch.actor_critic.sac import SACLearnerAgent
-from orangerl_torch.input_mappers.mlp_mapper import MLPNetworkAdaptor
+from orangerl_torch.network_adaptors.mlp_mapper import MLPNetworkAdaptor
 from orangerl_torch.critic_mappers.direct_mapper import NNDirectCriticMapper
 from orangerl_torch.action_mappers.tanh_bound import NNAgentTanhActionMapper
 from orangerl_torch import *
