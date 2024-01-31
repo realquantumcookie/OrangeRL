@@ -43,7 +43,6 @@ class NNAgentActionMapper(ABC, nn.Module):
     """
     NNAgentActionMapper is a module that maps the output of a neural network to an action.
     """
-    is_seq: bool
 
     @abstractmethod
     def forward(

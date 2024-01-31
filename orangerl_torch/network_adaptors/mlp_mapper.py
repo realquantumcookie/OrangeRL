@@ -31,15 +31,12 @@ class MLPNetworkAdaptor(NNAgentNetworkAdaptor):
     
     def map_net_output(
         self,
-        output : Any,
+        output : torch.Tensor,
         masks: Optional[torch.Tensor] = None,
         state: Optional[Tensor_Or_TensorDict] = None,
-        is_seq = False,
         is_update = False,
         stage : AgentStage = AgentStage.ONLINE,
     ) -> NNAgentNetworkOutput:
-        if is_seq:
-            raise NotImplementedError("MLPInputMapper does not support sequence models")
         
         assert masks is None or masks.ndim == 1, "masks must be 1 dimensional"
         assert state is None, "MLPInputMapper does not support stateful models"
