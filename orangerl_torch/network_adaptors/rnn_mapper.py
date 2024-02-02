@@ -30,7 +30,7 @@ class RNNNetworkAdaptor(NNAgentNetworkAdaptor):
             act_batch.flatten(start_dim=2)
         ], dim=2)
         if masks is not None:
-            lengths = masks.flatten(start_dim=1).sum(dim=1).long()
+            lengths = masks.flatten(start_dim=1).sum(dim=1).int().cpu()
             input = nn.utils.rnn.pack_padded_sequence(
                 concatenated_input, 
                 lengths, 

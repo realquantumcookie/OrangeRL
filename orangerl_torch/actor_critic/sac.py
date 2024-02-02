@@ -100,7 +100,7 @@ class SACLearnerAgent(NNActorCriticAgent):
         for _ in range(self.utd_ratio):
             batch = self.replay_buffer.sample(device)
             minibatch_size = batch.size(0) // self.actor_delay
-            
+
             for i in range(self.actor_delay):
                 minibatch = batch[i * minibatch_size : (i + 1) * minibatch_size]
                 critic_infos = self.update_critic(minibatch)
@@ -172,7 +172,7 @@ class SACLearnerAgent(NNActorCriticAgent):
             current_terminations = minibatch.terminations.float().flatten()
 
         target_q_values = current_rewards + self.decay_factor * (1.0 - current_terminations) * next_q_values
-        target_q_values = target_q_values.unsqueeze(0).expand(current_q_values_ensemble.size())
+        target_q_values = target_q_values.unsqueeze(0).expand(current_q_values_ensemble.size()).detach()
 
         critic_loss = nn.functional.mse_loss(current_q_values_ensemble, target_q_values)
         self.critic_optimizer.zero_grad()
@@ -183,6 +183,8 @@ class SACLearnerAgent(NNActorCriticAgent):
         
         self._sync_target_critic()
 
+        # assert not torch.isnan(critic_loss).any(), "Critic loss is NaN"
+        # assert not torch.isnan(current_q_values_ensemble).any(), "Current Q Values are NaN"
         return {
             "critic_loss": critic_loss.item(),
             "q": current_q_values_ensemble.mean().item()
@@ -235,6 +237,8 @@ class SACLearnerAgent(NNActorCriticAgent):
             temperature_alpha_loss.backward()
             self.temperature_alpha_optimizer.step()
         
+        # assert not torch.isnan(actor_loss).any(), "Actor loss is NaN"
+        # assert not torch.isnan(log_probs).any(), "Log Probs are NaN"
         return {
             "actor_loss": actor_loss.item(),
             "temperature_alpha": self.temperature_alpha.item(),

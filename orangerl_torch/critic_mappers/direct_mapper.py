@@ -14,8 +14,15 @@ class NNDirectCriticMapper(NNAgentCriticMapper):
         is_discrete : bool = False,
         stage : AgentStage = AgentStage.ONLINE
     ) -> BatchedNNCriticOutput:
+        real_output = nn_output.output
+        if not is_discrete:
+            if nn_output.is_seq:
+                real_output = real_output.flatten(start_dim=1)
+            else:
+                real_output = real_output.flatten(start_dim=0)
+        
         return BatchedNNCriticOutput(
-            critic_estimates=nn_output.output,
+            critic_estimates=real_output,
             distributions=None,
             log_stds=None,
             final_states=nn_output.state,

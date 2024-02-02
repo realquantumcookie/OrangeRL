@@ -3,4 +3,4 @@ from .replay_buffer import Storage, ListStorage, TensorStorage, LazyMemmapStorag
 from .agent import NNAgent, NNAgentOutput, BatchedNNAgentOutput, Tensor_Or_TensorDict, Tensor_Or_TensorDict_Or_Numpy_Or_Dict
 from .agent_util import NNAgentActionMapper, NNAgentNetworkOutput, NNAgentNetworkAdaptor, NNAgentCriticMapper, NNAgentActor, NNAgentActorImpl, NNAgentCritic, NNAgentCriticImpl, BatchedNNCriticOutput
 from .critic_util import NNAgentCriticEnsembleImpl
-from .network_util import MLP, ReshapeNNLayer
+from .network_util import MLP, RNNMLP, ReshapeNNLayer
