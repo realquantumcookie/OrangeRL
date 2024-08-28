@@ -1,0 +1,21 @@
+[project]
+name = "orangerl"
+version = "0.0.1a"
+requires-python = ">= 3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "tensordict>=0.5.0",
+    "numpy",
+    "gymnasium>=0.28.1",
+    "torchrl>=0.5.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "tqdm"
+]
+
+[tool.setuptools.packages.find]
+include = ["*"]
+exclude = ["training*", "tests*"]
