@@ -14,7 +14,7 @@
    limitations under the License.
 """
 
-from orangerl import Agent, AgentOutput, AgentStage, TransitionBatch, EnvironmentStep
+from orangerl import Agent, ActionOutput, AgentStage, TransitionIterable, EnvironmentStep
 from .data import NNBatch, Tensor_Or_Numpy, transform_any_array_to_numpy, transform_any_array_to_torch, nnbatch_from_transitions
 from .replay_buffer import NNReplayBuffer
 from abc import abstractmethod, ABC
@@ -29,7 +29,7 @@ from os import PathLike
 
 Tensor_Or_TensorDict = Union[torch.Tensor, TensorDictBase]
 Tensor_Or_TensorDict_Or_Numpy_Or_Dict = Union[torch.Tensor, TensorDictBase, np.ndarray, Dict[str, Any]]
-NNAgentOutput = AgentOutput[Tensor_Or_TensorDict, Tensor_Or_TensorDict, torch.Tensor]
+NNAgentOutput = ActionOutput[Tensor_Or_TensorDict, Tensor_Or_TensorDict, torch.Tensor]
 
 @dataclass
 class BatchedNNAgentOutput(Iterable[NNAgentOutput]):
